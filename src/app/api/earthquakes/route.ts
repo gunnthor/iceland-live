@@ -25,6 +25,7 @@ import type { ApiErrorResponse, EarthquakesResponse } from "@/domain/api";
 import { parseTimeRange, resolveWindow } from "@/domain/time-range";
 import { ProviderError } from "@/providers/types";
 import { getEarthquakeSnapshot } from "@/server/earthquakes";
+import { getRegionHistory } from "@/server/region-history";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -34,13 +35,22 @@ export async function GET(request: Request): Promise<NextResponse> {
   const range = parseTimeRange(url.searchParams.get("range"));
 
   try {
-    const snapshot = await getEarthquakeSnapshot();
+    const [snapshot, history] = await Promise.all([
+      getEarthquakeSnapshot(),
+      getRegionHistory(),
+    ]);
     const now = new Date();
     const { from, to } = resolveWindow(range, now);
 
     const quakes = filterByRange(snapshot.quakes, from, to);
     const stats = computeStats(quakes, { from, to });
-    const observations = detectObservations({ quakes, from, to, catalogue: snapshot.quakes });
+    const observations = detectObservations({
+      quakes,
+      from,
+      to,
+      catalogue: snapshot.quakes,
+      history: history?.history ?? null,
+    });
 
     const body: EarthquakesResponse = {
       ok: true,

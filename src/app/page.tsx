@@ -7,6 +7,7 @@ import { AppShell } from "@/components/AppShell";
 import type { EarthquakesResponse } from "@/domain/api";
 import { parseTimeRange, resolveWindow } from "@/domain/time-range";
 import { getEarthquakeSnapshot } from "@/server/earthquakes";
+import { getRegionHistory } from "@/server/region-history";
 
 /**
  * The homepage is the application.
@@ -32,12 +33,21 @@ async function loadInitialData(range: string | undefined): Promise<InitialPayloa
   const now = new Date();
 
   try {
-    const snapshot = await getEarthquakeSnapshot();
+    const [snapshot, history] = await Promise.all([
+      getEarthquakeSnapshot(),
+      getRegionHistory(),
+    ]);
     const { from, to } = resolveWindow(resolved, now);
 
     const quakes = filterByRange(snapshot.quakes, from, to);
     const stats = computeStats(quakes, { from, to });
-    const observations = detectObservations({ quakes, from, to, catalogue: snapshot.quakes });
+    const observations = detectObservations({
+      quakes,
+      from,
+      to,
+      catalogue: snapshot.quakes,
+      history: history?.history ?? null,
+    });
 
     const data: EarthquakesResponse = {
       ok: true,

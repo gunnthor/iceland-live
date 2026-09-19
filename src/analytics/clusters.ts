@@ -56,7 +56,13 @@
 
 import type { Earthquake } from "@/domain/earthquake";
 import { centroid, distanceKm, LAT_DEGREES_PER_KM, lonDegreesPerKm, type LatLon } from "@/lib/geo";
-import { baselineMethod, computeRegionBaseline, describeBaseline } from "./baseline";
+import {
+  baselineMethod,
+  computeHistoricalBaseline,
+  computeRegionBaseline,
+  describeBaseline,
+} from "./baseline";
+import type { RegionHistorySnapshot } from "@/domain/region-history";
 
 export const CLUSTER_EPS_KM = 5;
 /** Groups wider than this are regional background rather than a cluster. */
@@ -259,6 +265,12 @@ export type ObservationInput = {
    * own baseline.
    */
   catalogue?: readonly Earthquake[];
+  /**
+   * A year of per-region daily counts. Preferred over `catalogue` when present:
+   * it compares against a year rather than a month, and can rank the window
+   * against the region's own distribution.
+   */
+  history?: RegionHistorySnapshot | null;
 };
 
 export type ObservationResult = {
@@ -283,6 +295,7 @@ export function detectObservations({
   from,
   to,
   catalogue,
+  history,
 }: ObservationInput): ObservationResult {
   const maxWindowMs = OBSERVATION_MAX_WINDOW_HOURS * 3_600_000;
   const requestedMs = to.getTime() - from.getTime();
@@ -327,10 +340,21 @@ export function detectObservations({
      * region's own preceding record, and is omitted entirely when there is too
      * little of it to mean anything.
      */
-    const baseline =
-      catalogue && cluster.region
-        ? computeRegionBaseline(cluster.region, { catalogue, from: effectiveFrom, to })
-        : null;
+    const baseline = cluster.region
+      ? (history
+          ? computeHistoricalBaseline(
+              cluster.region,
+              { from: effectiveFrom, to },
+              // The region's events in the window, not the cluster's: a cluster
+              // has no history to be compared against.
+              scoped.filter((event) => event.region === cluster.region).length,
+              history,
+            )
+          : null) ??
+        (catalogue
+          ? computeRegionBaseline(cluster.region, { catalogue, from: effectiveFrom, to })
+          : null)
+      : null;
 
     result.observations.push({
       id: `dense-${cluster.id}`,
