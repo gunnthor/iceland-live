@@ -4,6 +4,7 @@ import type { Earthquake } from "@/domain/earthquake";
 import { aviationRank, isAboveBackground, type VolcanicSystem } from "@/domain/volcano";
 import { isActive, type GnssStation } from "@/domain/deformation";
 import type { WebcamSite } from "@/domain/webcam";
+import { readingFor, type AirQualityStation } from "@/domain/air-quality";
 import { UNKNOWN_MAGNITUDE_SIZE, type QuakeFeatureProps } from "./quake-layers";
 
 export type QuakeFeatureCollection = GeoJSON.FeatureCollection<GeoJSON.Point, QuakeFeatureProps>;
@@ -152,5 +153,40 @@ export function toWebcamGeoJson(
       geometry: { type: "Point", coordinates: [site.longitude, site.latitude] },
       properties: { id: site.id, name: site.name, views: site.views.length },
     })),
+  };
+}
+
+export type AirFeatureProps = {
+  id: string;
+  name: string;
+  /** SO2 in µg/m3, or -1 when the station does not report it. */
+  so2: number;
+  /** H2S in µg/m3, or -1 when the station does not report it. */
+  h2s: number;
+  /** The higher of the two, for sizing. -1 when neither is reported. */
+  gas: number;
+};
+
+/**
+ * Air quality stations for the map.
+ *
+ * Markers are sized by the volcanic gases and never coloured by a health band —
+ * see `EnvironmentPanel` for why. `-1` marks "not reported", which is distinct
+ * from a measured zero.
+ */
+export function toAirGeoJson(
+  stations: readonly AirQualityStation[],
+): GeoJSON.FeatureCollection<GeoJSON.Point, AirFeatureProps> {
+  return {
+    type: "FeatureCollection",
+    features: stations.map((station) => {
+      const so2 = readingFor(station, "SO2")?.value ?? -1;
+      const h2s = readingFor(station, "H2S")?.value ?? -1;
+      return {
+        type: "Feature" as const,
+        geometry: { type: "Point" as const, coordinates: [station.longitude, station.latitude] },
+        properties: { id: station.id, name: station.name, so2, h2s, gas: Math.max(so2, h2s) },
+      };
+    }),
   };
 }

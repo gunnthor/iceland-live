@@ -74,8 +74,11 @@ not built yet.
   cluster confined to one level reads differently from one spanning the crust.
 - **Live road cameras** — Vegagerðin's national network, ordered by distance from
   wherever the activity is, refreshing about once a minute.
+- **Air & roads** — SO₂, H₂S and particulates from the Environment and Energy
+  Agency's monitoring network, plus live road-weather wind readings and any road
+  segment that is not plainly clear.
 - **Quick-focus viewpoints** for Iceland, Reykjanes and Grindavík.
-- **Shareable URLs** — `?range=7d&event=<id>&volcanoes=1&reykjanes=1&deformation=1&cams=1&insar=<id>`.
+- **Shareable URLs** — `?range=7d&event=<id>&volcanoes=1&reykjanes=1&deformation=1&cams=1&air=1&insar=<id>`.
 
 ---
 
@@ -325,6 +328,61 @@ names is an open relay, usable to reach internal addresses from our own server.
 The products are immutable (the filename encodes sensor and both dates), so they
 are cached for a year.
 
+### Air quality — Environment and Energy Agency
+
+```
+GET https://api.ust.is/aq/a/getStations   — station metadata with coordinates
+GET https://api.ust.is/aq/a/getLatest     — last 24 hours, hourly, per station
+```
+
+Volcanic gas is the hazard from a Reykjanes eruption that reaches the most
+people, and SO₂ and H₂S are what this network measures. The two endpoints have
+to be joined on `local_id`: measurements carry no position, metadata carries no
+measurements.
+
+Three things worth recording:
+
+- **`Accept: application/json` gets a 406.** `api.ust.is` answers *406 Not
+  Acceptable* to an explicit JSON accept header while serving exactly that, and
+  works with `*/*` or no header at all. Its content negotiation evidently does
+  not advertise the type it returns.
+- **Everything live is unverified.** The agency documents `verification: 1` as
+  verified and `3` as not verified; every real-time reading is `3`. This is the
+  same situation as an unreviewed earthquake solution and is labelled the same
+  way.
+- **Negative concentrations appear and are dropped.** About 3% of live readings
+  carry a value below zero — baseline drift near the detection limit. A mass
+  concentration cannot be negative, so displaying it would present noise as a
+  measurement and clamping it to zero would invent a reading that was never
+  taken. The sample is treated as absent, which is what it is. A measured zero
+  is kept.
+
+**We report the measurements and do not grade them.** The agency publishes a
+health scale for these pollutants and is linked as the place to read one; a
+colour band invented here would be a health judgement this project has no
+standing to make. Map markers are sized by measured gas, never coloured by a
+band.
+
+### Road weather and conditions — Vegagerðin open data
+
+```
+GET https://gagnaveita.vegagerdin.is/api/vedur2014_1   — ~203 weather stations
+GET https://gagnaveita.vegagerdin.is/api/faerd2014_1   — ~970 road segments
+```
+
+Neither endpoint is listed in Vegagerðin's public documentation; both were found
+by matching the naming pattern of the documented webcam endpoint.
+
+**Weather stations** carry coordinates and live readings, and wind is the useful
+one: it decides where volcanic gas goes. **Road conditions** carry status text
+per segment but **no geometry**, so they cannot be drawn on the map — only
+listed. Of ~970 segments about 835 normally read "Greiðfært" (clear), so only
+the exceptions are surfaced; listing all of them would bury the handful that
+matter.
+
+Timestamps are day-first with no zone (`19.9.2026 17:40:00`) and are decomposed
+explicitly — `Date.parse` would read `19.9` as a month.
+
 ### Road cameras — Vegagerðin open data
 
 ```
@@ -401,6 +459,8 @@ src/
 │   ├── deformation.ts   Interferogram, GnssStation
 │   ├── region-history.ts  a year of per-region daily counts
 │   ├── webcam.ts        WebcamSite, IRCA attribution
+│   ├── air-quality.ts   AirQualityStation, Reading, verification state
+│   ├── roads.ts         RoadWeatherStation, RoadCondition
 │   ├── reykjanes.ts     Lava flows, barriers, graben, facilities
 │   ├── volcano.ts       VolcanicSystem, AviationStatus, VolcanicAlertLevel
 │   ├── time-range.ts    The five windows, and how to resolve one to instants
@@ -411,7 +471,8 @@ src/
 │   ├── registry.ts      The one place that picks an implementation
 │   ├── imo/             client · quakes · detail · volcanoes · CAP · EPOS
 │   ├── gis/             WFS client · Reykjanes layers (lava, barriers, graben)
-│   ├── vegagerdin/      live road cameras
+│   ├── vegagerdin/      live road cameras · road weather and conditions
+│   ├── ust/             air quality
 │   └── fixtures/        Offline snapshot provider
 │
 ├── server/          Caching and the degraded-mode policy.
@@ -423,6 +484,8 @@ src/
 │   ├── reykjanes.ts
 │   ├── deformation.ts   interferograms + GNSS network
 │   ├── region-history.ts  the year that baselines compare against
+│   ├── disk-cache.ts    best-effort accelerator for expensive derived data
+│   ├── environment.ts   air quality + roads
 │   └── webcams.ts
 │
 ├── analytics/       Pure functions over normalized data. Heavily tested.
@@ -436,7 +499,7 @@ src/
 │   ├── page.tsx         Server-renders the first payload
 │   └── api/             /api/earthquakes[/:id] · /api/alerts · /api/volcanoes
 │                        /api/reykjanes · /api/insar[/image]
-│                        /api/webcams[/image]
+│                        /api/webcams[/image] · /api/environment
 │
 ├── components/
 │   ├── map/             MapView, base-style tuning, layer specs, GeoJSON builders
@@ -446,7 +509,7 @@ src/
 │
 ├── hooks/           useEarthquakeData · useEarthquakeDetail · useAlerts
 │                  useReykjanesLayer · useDeformation · useWebcams
-│                  useUrlState · useNow · useMediaQuery
+│                  useEnvironment · useUrlState · useNow · useMediaQuery
 └── lib/             time · format · geo · simplify
 ```
 
@@ -526,11 +589,27 @@ on screen instead of an empty map. Concurrent callers share one in-flight fetch.
 | `/api/insar/image` | `max-age=31536000, immutable` | — (proxied, immutable) |
 | `/api/webcams` | `s-maxage=21600, swr=604800` | 6h / 7d (catalogue only) |
 | `/api/webcams/image` | `s-maxage=60, swr=120` | — (proxied, deliberately short) |
+| `/api/environment` | `s-maxage=300, swr=900` | 5min / 1h |
 
 The year of region history is cached separately for 24 hours and kept for a
 fortnight: one upstream request a day for ~35,000 events, reduced in about 30 ms
 to ~86 KB of daily counts. A baseline a day out of date is still a good
 baseline; having none costs every observation its context.
+
+### The disk cache
+
+That year is also written to disk, so a cold start reads ~90 KB of local JSON
+instead of re-fetching 5 MB and re-parsing it. Writes go to a temporary file and
+are renamed into place, so a concurrent reader sees either the old complete file
+or the new one, never a half-written one. Stored values carry a version and are
+ignored when it changes.
+
+It is **an accelerator, not storage**. Every caller works when it is empty,
+unreadable, or when the filesystem is read-only, and failures are logged once
+and swallowed — a cache that can take down the thing it accelerates is worse
+than no cache. On serverless only `os.tmpdir()` is writable and it is per
+instance, which still helps repeated cold starts on a warm instance. Set
+`ICELAND_LIVE_CACHE_DIR` to point it at a persistent volume where one exists.
 | any of them, degraded | `no-store` | — |
 
 The stale windows are not uniform, and the differences are deliberate. Six hours
@@ -735,6 +814,14 @@ that is where upstream reality meets our assumptions.
 - **Road cameras point at roads.** They are the best live imagery publicly
   available for Iceland, but they were installed to show driving conditions. A
   camera near an eruption may well be looking the other way.
+- **Air readings are unverified and can be stale.** Everything served live is
+  `verification: 3`, and individual stations sometimes go quiet for hours. The
+  age of each reading is shown for that reason.
+- **Road conditions cannot be mapped.** The feed carries status text but no
+  geometry, so they are a list rather than a layer. Matching them to road
+  segments would need the separate snow-route dataset.
+- **The disk cache is not durable on serverless.** It accelerates cold starts on
+  a warm instance and nothing more; correctness never depends on it.
 - **Depth is inferred as fixed from its value.** The bulk catalogue carries no
   `depthType`, so the depth chart marks exactly 10.00 km as assigned. The detail
   panel gets the real answer from the per-event endpoint; the chart is a hint.
@@ -762,23 +849,20 @@ that is where upstream reality meets our assumptions.
 
 **Next up**
 
-1. **Air quality.** The Environment and Energy Agency publishes SO₂, PM2.5 and
-   H₂S from a monitoring network, and volcanic gas is the hazard that most often
-   reaches Reykjavík when Reykjanes erupts. It is the largest remaining gap
-   between this site and "what do I actually need to know today".
-2. **Road conditions to go with the cameras.** Vegagerðin's DATEX II and
-   road-condition services sit beside the webcam API already in use, and a
-   camera showing a closed road is more useful when the closure is labelled.
-3. **Persisting the region history.** The year of daily counts is rebuilt from
-   scratch on a cold start, which costs one 5 MB fetch. Storing the reduced
-   counts would make cold starts instant and open the door to multi-year
-   baselines without re-fetching.
+1. **Wind vectors on the map.** The road-weather network already gives 203 live
+   wind readings, and during a gas episode the direction is the single most
+   useful thing on screen. Drawing them as arrows needs no new data source.
+2. **Air quality over time.** `getLatest` returns 24 hours per station and we
+   use only the newest sample. A sparkline per station would show whether a
+   reading is rising or clearing, which is what a reader actually wants to know.
+3. **Matching road conditions to geometry.** Vegagerðin's snow-route dataset
+   carries the segment geometry that `faerd2014_1` references by `IdButur`.
+   Joining them would turn the conditions list into a map layer.
 
 **Later**
 
 - *Volcano mode* — EPOS shakemaps, eruption imagery, tephra and SO₂ hazard maps.
-- *Air* — SO₂, PM2.5, PM10, H₂S, NO₂ from the Environment and Energy Agency.
-- *Roads* — conditions, closures, road weather stations (Vegagerðin).
+- *Air* — historical series, dispersion forecasts, volcanic pollution overlays.
 - *Weather* — wind, precipitation, temperature, alerts.
 - *Historical analytics* — is activity increasing, how unusual is today, where has
   activity migrated. Requires great care to keep description separate from
@@ -819,6 +903,10 @@ acquisitions, processed and published by IMO.
 Coastal Administration (IRCA) — [Vegagerðin](https://www.vegagerdin.is/), used
 under their [open data terms](https://www.vegagerdin.is/vegagerdin/gagnasafn/vefthjonustur/terms-and-conditions).
 Iceland Live is not affiliated with IRCA and this use is not endorsed by them.
+
+**Air quality**: [Environment and Energy Agency of Iceland (Umhverfis- og
+orkustofnun)](https://ust.is/), from the national air quality monitoring network.
+Real-time values are unverified.
 
 **Basemap**: [CARTO](https://carto.com/attributions) · [OpenStreetMap contributors](https://www.openstreetmap.org/copyright)
 

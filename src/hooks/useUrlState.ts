@@ -20,6 +20,7 @@ export type UrlState = {
   showReykjanes: boolean;
   showDeformation: boolean;
   showWebcams: boolean;
+  showEnvironment: boolean;
   /** Id of the interferogram laid over the map, if any. */
   insarId: string | null;
 };
@@ -31,6 +32,7 @@ export type UrlStateActions = {
   setShowReykjanes: (show: boolean) => void;
   setShowDeformation: (show: boolean) => void;
   setShowWebcams: (show: boolean) => void;
+  setShowEnvironment: (show: boolean) => void;
   setInsarId: (id: string | null) => void;
 };
 
@@ -42,6 +44,7 @@ export function readUrlState(params: URLSearchParams): UrlState {
     showReykjanes: params.get("reykjanes") === "1",
     showDeformation: params.get("deformation") === "1",
     showWebcams: params.get("cams") === "1",
+    showEnvironment: params.get("air") === "1",
     insarId: params.get("insar"),
   };
 }
@@ -115,6 +118,14 @@ export function useUrlState(): UrlState & UrlStateActions {
         update((params) => {
           if (show) params.set("cams", "1");
           else params.delete("cams");
+        }),
+      [update],
+    ),
+    setShowEnvironment: useCallback(
+      (show) =>
+        update((params) => {
+          if (show) params.set("air", "1");
+          else params.delete("air");
         }),
       [update],
     ),

@@ -9,6 +9,11 @@
  * Cached for 24 hours and kept for a fortnight. A baseline that is a day out of
  * date is still a good baseline; having none at all means observations lose
  * their context entirely, so the stale window is generous.
+ *
+ * The reduced counts are also written to disk, so a cold start reads ~86 KB of
+ * local JSON rather than re-fetching 5 MB and re-parsing it. That is an
+ * accelerator only — see `disk-cache.ts`. The service works identically when
+ * the filesystem is read-only.
  */
 
 import type { Earthquake } from "@/domain/earthquake";
@@ -16,11 +21,16 @@ import type { RegionHistory, RegionHistorySnapshot } from "@/domain/region-histo
 import { ImoQuakesProvider } from "@/providers/imo/quakes-provider";
 import type { ProviderMeta } from "@/providers/types";
 import { TtlCache } from "./cache";
+import { readDiskCache, writeDiskCache } from "./disk-cache";
 
 export const HISTORY_DAYS = 365;
 export const HISTORY_TTL_MS = 24 * 60 * 60 * 1000;
 const HISTORY_MAX_STALE_MS = 14 * 24 * 60 * 60 * 1000;
 const KEY = "history:regions";
+const DISK_KEY = "region-history";
+
+/** Bump when `RegionHistorySnapshot` changes shape, to ignore old files. */
+const DISK_VERSION = 1;
 
 type Snapshot = { history: RegionHistorySnapshot; meta: ProviderMeta };
 
@@ -81,6 +91,29 @@ export async function getRegionHistory(): Promise<Snapshot | null> {
   if (fresh) return { ...fresh.value, meta: { ...fresh.value.meta, freshness: "cached" } };
 
   inFlight ??= (async () => {
+    // A warm-enough file skips the 5 MB fetch entirely. Anything older than the
+    // TTL is ignored by `readDiskCache`, so this cannot serve a stale year.
+    const stored = await readDiskCache<RegionHistorySnapshot>(
+      DISK_KEY,
+      DISK_VERSION,
+      HISTORY_TTL_MS,
+    );
+
+    if (stored) {
+      const snapshot: Snapshot = {
+        history: stored,
+        meta: {
+          providerId: "imo-quakes",
+          // Real IMO data, read back from our own disk rather than the network.
+          freshness: "cached",
+          fetchedAt: new Date(stored.to).toISOString(),
+          attribution: provider.attribution,
+        },
+      };
+      cache.set(KEY, snapshot);
+      return snapshot;
+    }
+
     const to = new Date();
     const from = new Date(to.getTime() - HISTORY_DAYS * 86_400_000);
     const result = await provider.fetchEarthquakes({ from, to });
@@ -90,6 +123,10 @@ export async function getRegionHistory(): Promise<Snapshot | null> {
       meta: result.meta,
     };
     cache.set(KEY, snapshot);
+
+    // Fire and forget: the value is already in memory and usable.
+    void writeDiskCache(DISK_KEY, DISK_VERSION, snapshot.history);
+
     return snapshot;
   })().finally(() => {
     inFlight = null;

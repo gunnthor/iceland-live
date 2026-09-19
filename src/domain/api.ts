@@ -11,6 +11,8 @@ import type { EarthquakeStats } from "@/analytics/stats";
 import type { Summary } from "@/analytics/summary";
 import type { OfficialAlert } from "./alert";
 import type { GnssStation, Interferogram } from "./deformation";
+import type { AirQualityStation } from "./air-quality";
+import type { RoadCondition, RoadWeatherStation } from "./roads";
 import type { WebcamSite } from "./webcam";
 import type { RegionTally } from "@/analytics/stats";
 import type { Earthquake } from "./earthquake";
@@ -123,3 +125,22 @@ export type WebcamsResponse = {
 };
 
 export type WebcamsResult = WebcamsResponse | ApiErrorResponse;
+
+export type EnvironmentResponse = {
+  ok: true;
+  generatedAt: string;
+  air: AirQualityStation[];
+  /** Set when the air network could not be reached; `air` is then empty. */
+  airError: string | null;
+  roadWeather: RoadWeatherStation[];
+  /** Only segments that are not plainly clear. */
+  roadConditions: RoadCondition[];
+  /** How many segments were checked, so the filtered list has a denominator. */
+  roadConditionsTotal: number;
+  roadsError: string | null;
+  /** The acknowledgement IRCA's terms require. */
+  roadAttribution: string;
+  meta: ProviderMeta;
+};
+
+export type EnvironmentResult = EnvironmentResponse | ApiErrorResponse;

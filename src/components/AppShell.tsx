@@ -9,6 +9,7 @@ import { AlertsPanel } from "@/components/ui/AlertsPanel";
 import { DeformationPanel } from "@/components/ui/DeformationPanel";
 import { RegionList } from "@/components/ui/RegionList";
 import { WebcamPanel } from "@/components/ui/WebcamPanel";
+import { EnvironmentPanel } from "@/components/ui/EnvironmentPanel";
 import { BottomSheet, type SheetSnap } from "@/components/ui/BottomSheet";
 import { Brand } from "@/components/ui/Brand";
 import { MapControls } from "@/components/ui/MapControls";
@@ -30,6 +31,7 @@ import { useAlerts } from "@/hooks/useAlerts";
 import { useReykjanesLayer } from "@/hooks/useReykjanesLayer";
 import { useDeformation } from "@/hooks/useDeformation";
 import { useWebcams } from "@/hooks/useWebcams";
+import { useEnvironment } from "@/hooks/useEnvironment";
 import { lavaFlowsByRecency } from "@/domain/reykjanes";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { useNow } from "@/hooks/useNow";
@@ -67,6 +69,7 @@ export function AppShell({
     showReykjanes,
     showDeformation,
     showWebcams,
+    showEnvironment,
     insarId,
     setRange,
     setEventId,
@@ -74,6 +77,7 @@ export function AppShell({
     setShowReykjanes,
     setShowDeformation,
     setShowWebcams,
+    setShowEnvironment,
     setInsarId,
   } = useUrlState();
   const isDesktop = useMediaQuery(DESKTOP_QUERY, true);
@@ -96,6 +100,7 @@ export function AppShell({
   const reykjanes = useReykjanesLayer(showReykjanes);
   const deformation = useDeformation(showDeformation);
   const webcams = useWebcams(showWebcams);
+  const environment = useEnvironment(showEnvironment);
 
   /**
    * Where the current activity is centred, used to order the camera list.
@@ -391,6 +396,21 @@ export function AppShell({
           unavailable={deformation.unavailable}
         />
       )}
+      {showEnvironment && (
+        <EnvironmentPanel
+          air={environment.air}
+          airError={environment.airError}
+          roadWeather={environment.roadWeather}
+          roadConditions={environment.roadConditions}
+          roadConditionsTotal={environment.roadConditionsTotal}
+          roadsError={environment.roadsError}
+          roadAttribution={environment.roadAttribution}
+          focus={activityFocus}
+          nowMs={nowMs}
+          loading={environment.loading}
+          unavailable={environment.unavailable}
+        />
+      )}
       {showWebcams && (
         <WebcamPanel
           sites={webcams.sites}
@@ -459,6 +479,8 @@ export function AppShell({
         }
         webcams={webcams.sites}
         showWebcams={showWebcams}
+        airStations={environment.air}
+        showAir={showEnvironment}
         padding={padding}
       />
 
@@ -542,6 +564,10 @@ export function AppShell({
           onToggleWebcams={setShowWebcams}
           webcamsAvailable={!webcams.unavailable}
           webcamsLoading={webcams.loading}
+          showEnvironment={showEnvironment}
+          onToggleEnvironment={setShowEnvironment}
+          environmentAvailable={!environment.unavailable}
+          environmentLoading={environment.loading}
           latestEruption={latestEruption}
         />
       </div>

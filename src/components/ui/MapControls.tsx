@@ -170,6 +170,10 @@ export function MapControls({
   onToggleWebcams,
   webcamsAvailable,
   webcamsLoading,
+  showEnvironment,
+  onToggleEnvironment,
+  environmentAvailable,
+  environmentLoading,
   latestEruption,
   className,
 }: {
@@ -189,6 +193,10 @@ export function MapControls({
   onToggleWebcams: (show: boolean) => void;
   webcamsAvailable: boolean;
   webcamsLoading: boolean;
+  showEnvironment: boolean;
+  onToggleEnvironment: (show: boolean) => void;
+  environmentAvailable: boolean;
+  environmentLoading: boolean;
   /** Newest mapped lava flow, shown in the Reykjanes legend. */
   latestEruption: LavaFlowProperties | null;
   className?: string;
@@ -264,6 +272,19 @@ export function MapControls({
             deformationAvailable
               ? "IMO's published radar interferograms, plus the GNSS station network. Select an interferogram in the panel to lay it over the map."
               : "Deformation products are not available right now"
+          }
+        />
+        <LayerToggle
+          label="Air & roads"
+          checked={showEnvironment}
+          onChange={onToggleEnvironment}
+          available={environmentAvailable}
+          loading={environmentLoading}
+          dotColour="#5ec8b8"
+          title={
+            environmentAvailable
+              ? "SO2, H2S and particulates from the Environment and Energy Agency, plus road weather and conditions from Vegagerdin"
+              : "Air and road information is not available right now"
           }
         />
         <LayerToggle

@@ -13,6 +13,7 @@ import type maplibregl from "maplibre-gl";
 import type { GnssStation } from "@/domain/deformation";
 import type { ReykjanesLayer } from "@/domain/reykjanes";
 import type { WebcamSite } from "@/domain/webcam";
+import type { AirQualityStation } from "@/domain/air-quality";
 import type { VolcanicSystem } from "@/domain/volcano";
 import type { BoundingBox } from "@/lib/geo";
 import { DEFAULT_FOCUS } from "@/lib/geo";
@@ -23,6 +24,7 @@ import {
   toVolcanoLineGeoJson,
   toVolcanoPointGeoJson,
   toWebcamGeoJson,
+  toAirGeoJson,
 } from "./geojson";
 import {
   pulseLayer,
@@ -114,6 +116,9 @@ const GNSS_LABEL_LAYER = "gnss-station-label";
 const WEBCAM_SOURCE = "webcams";
 const WEBCAM_LAYER = "webcam-site";
 const WEBCAM_LABEL_LAYER = "webcam-site-label";
+const AIR_SOURCE = "air-quality";
+const AIR_LAYER = "air-station";
+const AIR_LABEL_LAYER = "air-station-label";
 
 /** Every layer belonging to the Reykjanes detail set, toggled together. */
 const REYKJANES_LAYERS = [
@@ -164,6 +169,8 @@ type MapData = {
   insar: InsarOverlay | null;
   webcams: readonly WebcamSite[];
   showWebcams: boolean;
+  airStations: readonly AirQualityStation[];
+  showAir: boolean;
 };
 
 /**
@@ -218,6 +225,12 @@ function applyAll(map: MapLibreMap, data: MapData): void {
   for (const layerId of [WEBCAM_LAYER, WEBCAM_LABEL_LAYER]) {
     if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", webcamVisibility);
   }
+
+  geoJsonSource(map, AIR_SOURCE)?.setData(toAirGeoJson(data.airStations));
+  const airVisibility = data.showAir ? "visible" : "none";
+  for (const layerId of [AIR_LAYER, AIR_LABEL_LAYER]) {
+    if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", airVisibility);
+  }
 }
 
 export type MapViewProps = {
@@ -241,6 +254,9 @@ export type MapViewProps = {
   /** Road camera sites. */
   webcams: readonly WebcamSite[];
   showWebcams: boolean;
+  /** Air quality stations. */
+  airStations: readonly AirQualityStation[];
+  showAir: boolean;
   /** Space reserved for the surrounding panels, so framing stays visible. */
   padding: MapPadding;
   onReady?: () => void;
@@ -274,6 +290,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     insar,
     webcams,
     showWebcams,
+    airStations,
+    showAir,
     padding,
     onReady,
   },
@@ -309,6 +327,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     insar,
     webcams,
     showWebcams,
+    airStations,
+    showAir,
   });
   latestRef.current = {
     quakes,
@@ -324,6 +344,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     insar,
     webcams,
     showWebcams,
+    airStations,
+    showAir,
   };
 
   useImperativeHandle(
@@ -472,6 +494,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       FACILITY_SOURCE,
       GNSS_SOURCE,
       WEBCAM_SOURCE,
+      AIR_SOURCE,
     ]) {
       map.addSource(id, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
     }
@@ -721,6 +744,57 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
      * Road cameras. Drawn above the events, because they are things you click
      * rather than data you read, and a marker hidden under a swarm is useless.
      */
+    /*
+     * Air quality stations, sized by measured volcanic gas.
+     *
+     * Size only, never a colour band: grading a concentration as safe or unsafe
+     * is a health judgement, and the agency publishes that scale themselves.
+     */
+    map.addLayer({
+      id: AIR_LAYER,
+      type: "circle",
+      source: AIR_SOURCE,
+      layout: { visibility: "none" },
+      paint: {
+        "circle-radius": [
+          "interpolate",
+          ["linear"],
+          ["max", ["get", "gas"], 0],
+          0, 3,
+          10, 6,
+          50, 11,
+          200, 18,
+        ],
+        "circle-color": "#5ec8b8",
+        "circle-opacity": 0.22,
+        "circle-stroke-width": 1.3,
+        "circle-stroke-color": "#5ec8b8",
+        "circle-stroke-opacity": 0.85,
+      },
+    });
+
+    map.addLayer({
+      id: AIR_LABEL_LAYER,
+      type: "symbol",
+      source: AIR_SOURCE,
+      minzoom: 8,
+      layout: {
+        visibility: "none",
+        "text-field": ["get", "name"],
+        "text-font": ["Open Sans Regular"],
+        "text-size": 10,
+        "text-offset": [0, 1.1],
+        "text-anchor": "top",
+        "text-padding": 4,
+      },
+      paint: {
+        "text-color": "#7fd4c1",
+        "text-halo-color": "#04070c",
+        "text-halo-width": 1.4,
+        "text-opacity": 0.85,
+      },
+    });
+
     map.addLayer({
       id: WEBCAM_LAYER,
       type: "circle",
@@ -899,6 +973,22 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", visibility);
     }
   }, [showWebcams, webcams]);
+
+  // --- Air quality ---
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !loadedRef.current) return;
+    geoJsonSource(map, AIR_SOURCE)?.setData(toAirGeoJson(airStations));
+  }, [airStations]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !loadedRef.current) return;
+    const visibility = showAir ? "visible" : "none";
+    for (const layerId of [AIR_LAYER, AIR_LABEL_LAYER]) {
+      if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", visibility);
+    }
+  }, [showAir, airStations]);
 
   // --- Interferogram overlay ---
   useEffect(() => {
