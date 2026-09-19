@@ -68,7 +68,13 @@ function setInsarOverlay(map: MapLibreMap, insar: InsarOverlay | null, beforeId?
       id: INSAR_LAYER,
       type: "raster",
       source: INSAR_SOURCE,
-      paint: { "raster-opacity": 0.78, "raster-fade-duration": 200 },
+      /*
+       * Deliberately below half. The point of laying an interferogram on the
+       * map is to see deformation *with* the seismicity, and at full strength
+       * these images are vivid enough to bury every earthquake marker and the
+       * lava barriers underneath them.
+       */
+      paint: { "raster-opacity": 0.55, "raster-fade-duration": 200 },
     },
     beforeId,
   );
