@@ -36,6 +36,9 @@ const VOLCANO_POINT_SOURCE = "volcano-points";
 const VOLCANO_LINE_LAYER = "volcano-line";
 const VOLCANO_LABEL_LAYER = "volcano-label";
 const VOLCANO_STATUS_LAYER = "volcano-status";
+const ALERT_AREA_SOURCE = "alert-area";
+const ALERT_AREA_FILL_LAYER = "alert-area-fill";
+const ALERT_AREA_LINE_LAYER = "alert-area-line";
 
 /** Attribution shown in the map corner. Every source we draw is credited. */
 const ATTRIBUTION = [
@@ -62,6 +65,7 @@ type MapData = {
   selectedId: string | null;
   volcanoes: readonly VolcanicSystem[] | null;
   showVolcanoes: boolean;
+  alertArea: GeoJSON.FeatureCollection | null;
 };
 
 /**
@@ -86,6 +90,10 @@ function applyAll(map: MapLibreMap, data: MapData): void {
   for (const layerId of [VOLCANO_LINE_LAYER, VOLCANO_STATUS_LAYER, VOLCANO_LABEL_LAYER]) {
     if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", visibility);
   }
+
+  geoJsonSource(map, ALERT_AREA_SOURCE)?.setData(
+    data.alertArea ?? { type: "FeatureCollection", features: [] },
+  );
 }
 
 export type MapViewProps = {
@@ -96,6 +104,8 @@ export type MapViewProps = {
   onSelect: (id: string | null) => void;
   volcanoes: readonly VolcanicSystem[] | null;
   showVolcanoes: boolean;
+  /** Area of the official warning being shown, or null. */
+  alertArea: GeoJSON.FeatureCollection | null;
   /** Space reserved for the surrounding panels, so framing stays visible. */
   padding: MapPadding;
   onReady?: () => void;
@@ -114,7 +124,17 @@ function toLngLatBounds(box: BoundingBox): LngLatBoundsLike {
 }
 
 export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
-  { quakes, referenceMs, selectedId, onSelect, volcanoes, showVolcanoes, padding, onReady },
+  {
+    quakes,
+    referenceMs,
+    selectedId,
+    onSelect,
+    volcanoes,
+    showVolcanoes,
+    alertArea,
+    padding,
+    onReady,
+  },
   ref,
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -133,8 +153,15 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
    * ready). This ref carries the current props into the load handler so the
    * first paint has data, rather than waiting for the next poll.
    */
-  const latestRef = useRef({ quakes, referenceMs, selectedId, volcanoes, showVolcanoes });
-  latestRef.current = { quakes, referenceMs, selectedId, volcanoes, showVolcanoes };
+  const latestRef = useRef({
+    quakes,
+    referenceMs,
+    selectedId,
+    volcanoes,
+    showVolcanoes,
+    alertArea,
+  });
+  latestRef.current = { quakes, referenceMs, selectedId, volcanoes, showVolcanoes, alertArea };
 
   useImperativeHandle(
     ref,
@@ -271,6 +298,10 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       type: "geojson",
       data: { type: "FeatureCollection", features: [] },
     });
+    map.addSource(ALERT_AREA_SOURCE, {
+      type: "geojson",
+      data: { type: "FeatureCollection", features: [] },
+    });
 
     // Volcanic line work sits beneath the events: it is context, not content.
     map.addLayer(
@@ -284,6 +315,38 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
           "line-width": ["interpolate", ["linear"], ["zoom"], 4, 0.7, 8, 1.2, 12, 2],
           "line-opacity": 0.5,
           "line-dasharray": [3, 2],
+        },
+      },
+      beforeId,
+    );
+
+    /*
+     * The area of the official warning the reader has asked to see.
+     *
+     * Only ever one at a time, and only on request: IMO's forecast regions are
+     * large enough that showing several would blanket the map and bury the
+     * earthquakes. Drawn in the warning's own published colour, beneath the
+     * events.
+     */
+    map.addLayer(
+      {
+        id: ALERT_AREA_FILL_LAYER,
+        type: "fill",
+        source: ALERT_AREA_SOURCE,
+        paint: { "fill-color": ["get", "colour"], "fill-opacity": 0.1 },
+      },
+      beforeId,
+    );
+    map.addLayer(
+      {
+        id: ALERT_AREA_LINE_LAYER,
+        type: "line",
+        source: ALERT_AREA_SOURCE,
+        paint: {
+          "line-color": ["get", "colour"],
+          "line-width": 1.2,
+          "line-opacity": 0.75,
+          "line-dasharray": [4, 2],
         },
       },
       beforeId,
@@ -405,6 +468,15 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", visibility);
     }
   }, [showVolcanoes, volcanoes]);
+
+  // --- Official warning area ---
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !loadedRef.current) return;
+    geoJsonSource(map, ALERT_AREA_SOURCE)?.setData(
+      alertArea ?? { type: "FeatureCollection", features: [] },
+    );
+  }, [alertArea]);
 
   // --- Pulse animation --------------------------------------------------------
   useEffect(() => {

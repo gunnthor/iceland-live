@@ -9,6 +9,7 @@ import type { ActivityObservation } from "@/analytics/clusters";
 import type { Histogram } from "@/analytics/histogram";
 import type { EarthquakeStats } from "@/analytics/stats";
 import type { Summary } from "@/analytics/summary";
+import type { OfficialAlert } from "./alert";
 import type { Earthquake } from "./earthquake";
 import type { EarthquakeDetail } from "./earthquake-detail";
 import type { TimeRangeId } from "./time-range";
@@ -62,6 +63,16 @@ export type EarthquakeDetailResponse = {
 export type EarthquakeDetailResult = EarthquakeDetailResponse | ApiErrorResponse;
 
 export type EarthquakesResult = EarthquakesResponse | ApiErrorResponse;
+
+export type AlertsResponse = {
+  ok: true;
+  generatedAt: string;
+  /** Warnings in force, most serious first. Empty is the normal state. */
+  alerts: OfficialAlert[];
+  meta: ProviderMeta;
+};
+
+export type AlertsResult = AlertsResponse | ApiErrorResponse;
 
 export type VolcanoesResponse = {
   ok: true;

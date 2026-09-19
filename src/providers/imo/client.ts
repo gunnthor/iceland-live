@@ -19,6 +19,7 @@ export const IMO_BASE_URL = process.env.IMO_API_BASE_URL ?? "https://api.vedur.i
 export const IMO_API_VERSIONS = {
   quakes: process.env.IMO_QUAKES_API_VERSION ?? "2026-08-06",
   volcanoes: process.env.IMO_VOLCANOES_API_VERSION ?? "2026-06-04",
+  cap: process.env.IMO_CAP_API_VERSION ?? "2026-04-14",
 } as const;
 
 export type ImoService = keyof typeof IMO_API_VERSIONS;
@@ -108,6 +109,23 @@ export async function imoFetchText(request: ImoRequest): Promise<string> {
 
 export async function imoFetchJson<T>(request: ImoRequest): Promise<T> {
   const text = await imoFetchText(request);
+  try {
+    return JSON.parse(text) as T;
+  } catch (cause) {
+    throw new ProviderError("parse", `IMO returned a body that is not valid JSON for ${buildImoUrl(request)}`, { cause });
+  }
+}
+
+/**
+ * Like `imoFetchJson`, but treats an empty body as an explicit "nothing here".
+ *
+ * The CAP broker answers 204 No Content when no warnings are in force, which is
+ * the ordinary state most of the time. That is a successful answer meaning
+ * "none", not a malformed one, and parsing it as JSON would fail.
+ */
+export async function imoFetchJsonOrEmpty<T>(request: ImoRequest): Promise<T | null> {
+  const text = (await imoFetchText(request)).trim();
+  if (text === "") return null;
   try {
     return JSON.parse(text) as T;
   } catch (cause) {

@@ -7,6 +7,7 @@
 
 import { ImoQuakesProvider } from "@/providers/imo/quakes-provider";
 import { ImoVolcanoProvider } from "@/providers/imo/volcano-provider";
+import { ImoCapProvider, type AlertProvider } from "@/providers/imo/cap-provider";
 import { FixtureEarthquakeProvider } from "@/providers/fixtures/fixture-provider";
 import type { EarthquakeProvider, VolcanoProvider } from "@/providers/types";
 
@@ -26,6 +27,7 @@ function fixturesAllowed(): boolean {
 
 let earthquakeProvider: EarthquakeProvider | null = null;
 let volcanoProvider: VolcanoProvider | null = null;
+let alertProvider: AlertProvider | null = null;
 
 export function getEarthquakeProvider(): EarthquakeProvider {
   if (earthquakeProvider) return earthquakeProvider;
@@ -48,4 +50,14 @@ export function getEarthquakeProvider(): EarthquakeProvider {
 export function getVolcanoProvider(): VolcanoProvider {
   volcanoProvider ??= new ImoVolcanoProvider();
   return volcanoProvider;
+}
+
+/**
+ * Official warnings always come from IMO. There is deliberately no fixture
+ * alternative: inventing a warning, even in development, is not something this
+ * codebase should make easy.
+ */
+export function getAlertProvider(): AlertProvider {
+  alertProvider ??= new ImoCapProvider();
+  return alertProvider;
 }

@@ -5,6 +5,7 @@ import type { ActivityObservation } from "@/analytics/clusters";
 import { Timeline } from "@/components/charts/Timeline";
 import { MapView, type MapPadding, type MapViewHandle } from "@/components/map/MapView";
 import { ActivityFeed, type FeedSort } from "@/components/ui/ActivityFeed";
+import { AlertsPanel } from "@/components/ui/AlertsPanel";
 import { BottomSheet, type SheetSnap } from "@/components/ui/BottomSheet";
 import { Brand } from "@/components/ui/Brand";
 import { MapControls } from "@/components/ui/MapControls";
@@ -16,8 +17,10 @@ import { SummaryPanel } from "@/components/ui/SummaryPanel";
 import { ErrorBanner, LoadingState, UnavailableState } from "@/components/ui/States";
 import type { EarthquakesResponse, VolcanoesResult } from "@/domain/api";
 import type { VolcanicSystem } from "@/domain/volcano";
+import type { OfficialAlert } from "@/domain/alert";
 import { useEarthquakeData } from "@/hooks/useEarthquakeData";
 import { useEarthquakeDetail } from "@/hooks/useEarthquakeDetail";
+import { useAlerts } from "@/hooks/useAlerts";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { useNow } from "@/hooks/useNow";
 import { useUrlState } from "@/hooks/useUrlState";
@@ -63,6 +66,10 @@ export function AppShell({
   const [sheetSnap, setSheetSnap] = useState<SheetSnap>("peek");
   const [volcanoes, setVolcanoes] = useState<VolcanicSystem[] | null>(null);
   const [volcanoError, setVolcanoError] = useState(false);
+
+  const { alerts, unavailable: alertsUnavailable } = useAlerts();
+  /** The one warning area currently drawn on the map, if any. */
+  const [alertArea, setAlertArea] = useState<GeoJSON.FeatureCollection | null>(null);
 
   const mapRef = useRef<MapViewHandle>(null);
 
@@ -137,6 +144,66 @@ export function AppShell({
     [isDesktop],
   );
 
+  /**
+   * Draws an official warning's area and frames it.
+   *
+   * Only one at a time — IMO's forecast regions are large, and several at once
+   * would cover the map. Selecting the same warning again clears it.
+   */
+  const showAlertArea = useCallback(
+    (alert: OfficialAlert) => {
+      const features = alert.areas
+        .filter((area) => area.geometry !== null)
+        .map((area, index) => ({
+          type: "Feature" as const,
+          id: `${alert.id}-${index}`,
+          geometry: area.geometry as GeoJSON.Geometry,
+          properties: {
+            colour:
+              alert.colour === "Red"
+                ? "#e2564a"
+                : alert.colour === "Orange"
+                  ? "#e8913c"
+                  : alert.colour === "Yellow"
+                    ? "#e8c34a"
+                    : "#9aa0ad",
+          },
+        }));
+
+      if (features.length === 0) return;
+
+      const alreadyShown = alertArea?.features[0]?.id === features[0]?.id;
+      if (alreadyShown) {
+        setAlertArea(null);
+        return;
+      }
+
+      setAlertArea({ type: "FeatureCollection", features });
+
+      // Frame the union of the area's rings.
+      let west = Infinity;
+      let south = Infinity;
+      let east = -Infinity;
+      let north = -Infinity;
+      for (const area of alert.areas) {
+        if (area.geometry?.type !== "Polygon") continue;
+        for (const ring of area.geometry.coordinates) {
+          for (const [lon, lat] of ring as Array<[number, number]>) {
+            if (lon < west) west = lon;
+            if (lon > east) east = lon;
+            if (lat < south) south = lat;
+            if (lat > north) north = lat;
+          }
+        }
+      }
+      if (Number.isFinite(west)) {
+        mapRef.current?.fitBounds({ west, south, east, north }, { maxZoom: 9 });
+      }
+      if (!isDesktop) setSheetSnap("peek");
+    },
+    [alertArea, isDesktop],
+  );
+
   const focusArea = useCallback(
     (focus: MapFocus) => {
       mapRef.current?.fitBounds(focus.bounds);
@@ -204,6 +271,12 @@ export function AppShell({
     />
   ) : (
     <>
+      <AlertsPanel
+        alerts={alerts}
+        nowMs={nowMs}
+        onShowArea={showAlertArea}
+        unavailable={alertsUnavailable}
+      />
       <SummaryPanel
         summary={data.summary}
         observations={data.observations}
@@ -255,6 +328,7 @@ export function AppShell({
         onSelect={selectFromMap}
         volcanoes={volcanoes}
         showVolcanoes={showVolcanoes && volcanoes !== null}
+        alertArea={alertArea}
         padding={padding}
       />
 
