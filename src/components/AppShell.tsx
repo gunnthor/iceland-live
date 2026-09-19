@@ -1,0 +1,371 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ActivityObservation } from "@/analytics/clusters";
+import { Timeline } from "@/components/charts/Timeline";
+import { MapView, type MapPadding, type MapViewHandle } from "@/components/map/MapView";
+import { ActivityFeed, type FeedSort } from "@/components/ui/ActivityFeed";
+import { BottomSheet, type SheetSnap } from "@/components/ui/BottomSheet";
+import { Brand } from "@/components/ui/Brand";
+import { MapControls } from "@/components/ui/MapControls";
+import { QuakeDetail } from "@/components/ui/QuakeDetail";
+import { RangeControl } from "@/components/ui/RangeControl";
+import { StatBar } from "@/components/ui/StatBar";
+import { StatusPill } from "@/components/ui/StatusPill";
+import { SummaryPanel } from "@/components/ui/SummaryPanel";
+import { ErrorBanner, LoadingState, UnavailableState } from "@/components/ui/States";
+import type { EarthquakesResponse, VolcanoesResult } from "@/domain/api";
+import type { VolcanicSystem } from "@/domain/volcano";
+import { useEarthquakeData } from "@/hooks/useEarthquakeData";
+import { useMediaQuery } from "@/hooks/useMediaQuery";
+import { useNow } from "@/hooks/useNow";
+import { useUrlState } from "@/hooks/useUrlState";
+import { DEFAULT_FOCUS, padBounds, type BoundingBox, type MapFocus } from "@/lib/geo";
+import { TIME_RANGE_IDS, type TimeRangeId } from "@/domain/time-range";
+
+const DESKTOP_QUERY = "(min-width: 1024px)";
+const PANEL_WIDTH = 372;
+
+/** Room the panels need so framing never puts events underneath them. */
+function mapPadding(isDesktop: boolean, sheetSnap: SheetSnap): MapPadding {
+  if (isDesktop) {
+    return { top: 96, right: 32, bottom: 150, left: PANEL_WIDTH + 32 };
+  }
+  return {
+    top: 132,
+    right: 16,
+    bottom: sheetSnap === "peek" ? 120 : 24,
+    left: 16,
+  };
+}
+
+export function AppShell({
+  initialData,
+  serverNowMs,
+}: {
+  initialData: EarthquakesResponse | null;
+  serverNowMs: number;
+}) {
+  const { range, eventId, showVolcanoes, setRange, setEventId, setShowVolcanoes } = useUrlState();
+  const isDesktop = useMediaQuery(DESKTOP_QUERY, true);
+  const nowMs = useNow(serverNowMs);
+
+  const { data, error, refreshing, offline, refresh } = useEarthquakeData(
+    range,
+    initialData,
+  );
+
+  const [sort, setSort] = useState<FeedSort>("newest");
+  const [sheetSnap, setSheetSnap] = useState<SheetSnap>("peek");
+  const [volcanoes, setVolcanoes] = useState<VolcanicSystem[] | null>(null);
+  const [volcanoError, setVolcanoError] = useState(false);
+
+  const mapRef = useRef<MapViewHandle>(null);
+
+  /*
+   * The header's height changes with viewport width (one row on desktop, two on
+   * a phone) and with the font metrics the browser actually resolves, so the
+   * floating map controls are positioned from a measurement rather than a
+   * hard-coded offset that drifts whenever the bar's padding changes.
+   */
+  const headerRef = useRef<HTMLElement>(null);
+  const [headerHeight, setHeaderHeight] = useState(96);
+  useEffect(() => {
+    const element = headerRef.current;
+    if (!element) return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry) setHeaderHeight(entry.contentRect.height);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  const quakes = useMemo(() => data?.quakes ?? [], [data]);
+  const selected = useMemo(
+    () => (eventId ? (quakes.find((quake) => quake.id === eventId) ?? null) : null),
+    [quakes, eventId],
+  );
+
+  const padding = mapPadding(isDesktop, sheetSnap);
+
+  /** The next range up, offered when the current window turns up nothing. */
+  const widerRange: TimeRangeId | null =
+    TIME_RANGE_IDS[TIME_RANGE_IDS.indexOf(range) + 1] ?? null;
+
+  // --- Selection --------------------------------------------------------------
+
+  /** Selection made on the map: the event is already in view, so do not move. */
+  const selectFromMap = useCallback(
+    (id: string | null) => {
+      setEventId(id);
+      if (id && !isDesktop) setSheetSnap((snap) => (snap === "peek" ? "half" : snap));
+    },
+    [setEventId, isDesktop],
+  );
+
+  /** Selection made from a list, stat or chart: bring the map to it. */
+  const focusEvent = useCallback(
+    (id: string) => {
+      setEventId(id);
+      const quake = quakes.find((item) => item.id === id);
+      if (quake) mapRef.current?.flyToPoint(quake.longitude, quake.latitude, 9.5);
+      if (!isDesktop) setSheetSnap("half");
+    },
+    [quakes, setEventId, isDesktop],
+  );
+
+  const focusObservation = useCallback(
+    (observation: ActivityObservation) => {
+      if (!observation.focus) return;
+      const { centre, radiusKm } = observation.focus;
+      const box: BoundingBox = padBounds(
+        {
+          west: centre.longitude,
+          south: centre.latitude,
+          east: centre.longitude,
+          north: centre.latitude,
+        },
+        Math.max(radiusKm * 1.6, 6),
+      );
+      mapRef.current?.fitBounds(box, { maxZoom: 11 });
+      if (!isDesktop) setSheetSnap("peek");
+    },
+    [isDesktop],
+  );
+
+  const focusArea = useCallback(
+    (focus: MapFocus) => {
+      mapRef.current?.fitBounds(focus.bounds);
+      if (!isDesktop) setSheetSnap("peek");
+    },
+    [isDesktop],
+  );
+
+  // Escape clears the selection, wherever focus happens to be.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && eventId) setEventId(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [eventId, setEventId]);
+
+  // A deep link to an event should arrive with the map already on it.
+  const deepLinkHandled = useRef(false);
+  useEffect(() => {
+    if (deepLinkHandled.current || !selected) return;
+    deepLinkHandled.current = true;
+    mapRef.current?.flyToPoint(selected.longitude, selected.latitude, 9.5);
+  }, [selected]);
+
+  // --- Volcanic systems, fetched only when the layer is first switched on -----
+  useEffect(() => {
+    if (!showVolcanoes || volcanoes || volcanoError) return;
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch("/api/volcanoes", { headers: { accept: "application/json" } });
+        const body = (await response.json()) as VolcanoesResult;
+        if (cancelled) return;
+        if (body.ok) setVolcanoes(body.systems);
+        else setVolcanoError(true);
+      } catch {
+        if (!cancelled) setVolcanoError(true);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [showVolcanoes, volcanoes, volcanoError]);
+
+  // --- Panel content, shared between the desktop rail and the mobile sheet ----
+
+  const hasData = data !== null;
+  const fatal = !hasData && error !== null;
+
+  const panelBody = fatal ? (
+    <UnavailableState message={error.message} onRetry={refresh} offline={offline} />
+  ) : !hasData ? (
+    <LoadingState />
+  ) : selected ? (
+    <QuakeDetail
+      quake={selected}
+      nowMs={nowMs}
+      onBack={() => setEventId(null)}
+      onLocate={() => mapRef.current?.flyToPoint(selected.longitude, selected.latitude, 10.5)}
+    />
+  ) : (
+    <>
+      <SummaryPanel
+        summary={data.summary}
+        observations={data.observations}
+        observationWindowCapped={data.observationWindow.capped}
+        onFocusObservation={focusObservation}
+      />
+      <ActivityFeed
+        quakes={quakes}
+        sort={sort}
+        onSortChange={setSort}
+        selectedId={eventId}
+        nowMs={nowMs}
+        onSelect={focusEvent}
+        onWiden={widerRange ? () => setRange(widerRange) : undefined}
+      />
+    </>
+  );
+
+  const banner =
+    hasData && error ? (
+      <ErrorBanner
+        message={
+          offline
+            ? "You are offline. Showing the last data received."
+            : `${error.message} Showing the last data received.`
+        }
+        onRetry={refresh}
+      />
+    ) : hasData && data.meta.freshness === "stale" ? (
+      <ErrorBanner
+        message="The Icelandic Meteorological Office is not reachable. This is the last data we received, not current observations."
+        onRetry={refresh}
+      />
+    ) : null;
+
+  /* Lift MapLibre's own controls above whichever panel occupies the bottom. */
+  const controlBottom = isDesktop ? 136 : sheetSnap === "peek" ? 184 : 24;
+
+  return (
+    <main
+      className="relative h-[100dvh] w-full overflow-hidden bg-[var(--color-base)]"
+      style={{ "--map-ctrl-bottom": `${controlBottom}px` } as React.CSSProperties}
+    >
+      <MapView
+        ref={mapRef}
+        quakes={quakes}
+        referenceMs={data ? Date.parse(data.generatedAt) : nowMs}
+        selectedId={eventId}
+        onSelect={selectFromMap}
+        volcanoes={volcanoes}
+        showVolcanoes={showVolcanoes && volcanoes !== null}
+        padding={padding}
+      />
+
+      {/* ---- Top bar ---- */}
+      <header
+        ref={headerRef}
+        className="panel absolute inset-x-0 top-0 z-20 border-x-0 border-t-0 lg:inset-x-3 lg:top-3 lg:rounded-lg lg:border"
+      >
+        <div className="flex items-center gap-4 px-4 py-2.5 lg:px-5 lg:py-3">
+          <Brand className="hidden sm:flex" />
+          <Brand markOnly className="sm:hidden" />
+          <div className="hidden h-8 w-px shrink-0 bg-[var(--color-line)] lg:block" />
+          <div className="min-w-0 flex-1">
+            {data ? (
+              <StatBar
+                stats={data.stats}
+                range={range}
+                nowMs={nowMs}
+                onFocusEvent={focusEvent}
+              />
+            ) : (
+              <div className="h-[46px]" aria-hidden="true" />
+            )}
+          </div>
+          <div className="hidden shrink-0 items-center gap-3 lg:flex">
+            <RangeControl value={range} onChange={setRange} />
+            <StatusPill
+              meta={data?.meta ?? null}
+              error={error}
+              refreshing={refreshing}
+              nowMs={nowMs}
+              onRetry={refresh}
+            />
+          </div>
+        </div>
+
+        {/* On narrow screens the range control gets its own row. */}
+        <div className="flex items-center justify-between gap-3 border-t border-[var(--color-line)] px-4 py-2 lg:hidden">
+          <RangeControl value={range} onChange={setRange} className="flex-1 justify-between" />
+          <StatusPill
+            meta={data?.meta ?? null}
+            error={error}
+            refreshing={refreshing}
+            nowMs={nowMs}
+            onRetry={refresh}
+          />
+        </div>
+      </header>
+
+      {/* ---- Desktop rail ---- */}
+      {isDesktop && (
+        <aside
+          className="panel absolute bottom-3 left-3 z-20 flex flex-col overflow-hidden rounded-lg"
+          style={{ width: PANEL_WIDTH, top: headerHeight + 24 }}
+          aria-label="Earthquake activity"
+        >
+          {banner}
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">{panelBody}</div>
+        </aside>
+      )}
+
+      {/* ---- Map controls ---- */}
+      <div
+        className="absolute z-20 flex flex-col items-end gap-1.5"
+        style={{ top: headerHeight + (isDesktop ? 24 : 12), right: 12 }}
+      >
+        <MapControls
+          onFocus={focusArea}
+          showVolcanoes={showVolcanoes}
+          onToggleVolcanoes={setShowVolcanoes}
+          volcanoesAvailable={!volcanoError}
+        />
+      </div>
+
+      {/* ---- Timeline ---- */}
+      {isDesktop && data && (
+        <div
+          className="panel absolute bottom-3 z-20 rounded-lg px-4 py-3"
+          style={{ left: PANEL_WIDTH + 24, right: 12 }}
+        >
+          <Timeline
+            histogram={data.histogram}
+            quakes={quakes}
+            range={range}
+            selectedId={eventId}
+            onSelect={focusEvent}
+          />
+        </div>
+      )}
+
+      {/* ---- Mobile sheet ---- */}
+      {!isDesktop && (
+        <BottomSheet snap={sheetSnap} onSnapChange={setSheetSnap} label="Earthquake activity">
+          {banner}
+          {data && (
+            <div className="border-b border-[var(--color-line)] px-4 pb-3 pt-1">
+              <Timeline
+                histogram={data.histogram}
+                quakes={quakes}
+                range={range}
+                selectedId={eventId}
+                onSelect={focusEvent}
+              />
+            </div>
+          )}
+          {panelBody}
+        </BottomSheet>
+      )}
+
+      {/* Reset framing is useful once the user has wandered off. */}
+      <button
+        type="button"
+        onClick={() => focusArea(DEFAULT_FOCUS)}
+        className="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-50 focus:rounded-md focus:bg-[var(--color-surface-raised)] focus:px-3 focus:py-2 focus:text-[12px]"
+      >
+        Reset map to all of Iceland
+      </button>
+    </main>
+  );
+}

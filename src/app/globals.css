@@ -1,0 +1,308 @@
+@import "tailwindcss";
+
+/*
+  MapLibre's stylesheet must land in a cascade layer. Imported unlayered it
+  outranks every Tailwind utility (unlayered styles beat layered ones), and its
+  `.maplibregl-map { position: relative }` then silently defeats `absolute`,
+  collapsing the map container to zero height.
+*/
+@import "maplibre-gl/dist/maplibre-gl.css" layer(base);
+
+/* ============================================================================
+   Iceland Live — design tokens
+
+   The interface is deliberately monochrome. Colour carries meaning here:
+   earthquake markers encode recency, and official IMO alert colours are shown
+   in their real colours. Everything else — panels, borders, controls, type —
+   is greyscale, so the data is the only thing on screen that is coloured.
+   ========================================================================= */
+
+@theme {
+  /* Surfaces. A cool, near-black base so the map reads as the light source. */
+  --color-base: #05070a;
+  --color-surface: #0b0e13;
+  --color-surface-raised: #11151c;
+
+  /* Type. Four steps is enough; more becomes mush at small sizes. */
+  --color-ink: #e9ecf1;
+  --color-ink-muted: #98a2af;
+  --color-ink-dim: #6a7484;
+  --color-ink-faint: #495260;
+
+  /* Hairlines, not borders. */
+  --color-line: rgb(255 255 255 / 0.07);
+  --color-line-strong: rgb(255 255 255 / 0.14);
+
+  /* Recency ramp for earthquake markers: warm when fresh, cooling with age. */
+  --color-quake-now: #ff6b3d;
+  --color-quake-recent: #f0a63c;
+  --color-quake-mid: #8d93a3;
+  --color-quake-old: #55606f;
+
+  /* Official IMO status colours. These are not ours to restyle. */
+  --color-alert-green: #3fb27f;
+  --color-alert-yellow: #e8c34a;
+  --color-alert-orange: #e8913c;
+  --color-alert-red: #e2564a;
+
+  /* Volcanic system line work. Muted so it never competes with the events. */
+  --color-volcano: #b8674a;
+
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-mono-data), ui-monospace, "SF Mono", monospace;
+
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-line);
+  }
+
+  html {
+    background-color: var(--color-base);
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--color-base);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    /* The map owns the viewport; nothing below it should scroll the page. */
+    overflow: hidden;
+    overscroll-behavior: none;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Numbers line up in columns wherever they are compared. */
+  .tnum,
+  table,
+  [data-numeric] {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+  }
+
+  :focus-visible {
+    outline: 2px solid rgb(255 255 255 / 0.7);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+
+  /* Scrollbars, toned down to match the panels they live in. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(255 255 255 / 0.16) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background-color: rgb(255 255 255 / 0.16);
+    border-radius: 999px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer components {
+  /*
+    Panel: the one surface treatment in the app. A single translucent layer with
+    a hairline and a soft shadow — not stacked glass.
+  */
+  .panel {
+    background-color: rgb(9 12 17 / 0.82);
+    backdrop-filter: blur(20px) saturate(140%);
+    -webkit-backdrop-filter: blur(20px) saturate(140%);
+    border: 1px solid var(--color-line);
+    box-shadow:
+      0 1px 0 0 rgb(255 255 255 / 0.04) inset,
+      0 16px 48px -12px rgb(0 0 0 / 0.7);
+  }
+
+  /* Where a panel meets a viewport edge, the blur needs more opacity to hold. */
+  .panel-solid {
+    /*
+      Near-opaque on purpose. This surface carries most of the reading on a
+      phone, and earthquake markers glowing through a paragraph is the kind of
+      glassmorphism that costs legibility for nothing.
+    */
+    background-color: rgb(7 10 14 / 0.975);
+    backdrop-filter: blur(24px) saturate(140%);
+    -webkit-backdrop-filter: blur(24px) saturate(140%);
+  }
+
+  /* Small caps label used for every field name in the interface. */
+  .label {
+    font-size: 10px;
+    line-height: 1;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--color-ink-dim);
+  }
+
+  /* Interactive row shared by the activity feed and observation list. */
+  .row-button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    transition:
+      background-color 160ms var(--ease-out-soft),
+      color 160ms var(--ease-out-soft);
+  }
+  .row-button:hover {
+    background-color: rgb(255 255 255 / 0.04);
+  }
+  .row-button[aria-current="true"] {
+    background-color: rgb(255 255 255 / 0.07);
+  }
+}
+
+/* ============================================================================
+   MapLibre overrides. The stock controls do not match this interface.
+   ========================================================================= */
+
+.maplibregl-map {
+  font-family: var(--font-sans);
+}
+
+/*
+  MapLibre positions its controls against the map container, which is the whole
+  viewport — so by default the zoom buttons and the attribution sit underneath
+  the activity rail and the timeline. `--map-ctrl-bottom` is set by the shell to
+  the height those panels occupy, lifting the controls clear of them.
+*/
+.maplibregl-ctrl-bottom-right {
+  bottom: var(--map-ctrl-bottom, 0px);
+  transition: bottom 280ms var(--ease-out-soft);
+}
+
+/*
+  Keep the attribution collapsed to its "i" button until asked for. Expanded, it
+  is a line of small print across the bottom of the map; the credits are also
+  given in full in the About panel and the README.
+*/
+.maplibregl-ctrl-attrib.maplibregl-compact:not(:hover):not(:focus-within) .maplibregl-ctrl-attrib-inner {
+  display: none;
+}
+.maplibregl-ctrl-attrib.maplibregl-compact:not(:hover):not(:focus-within) {
+  min-height: 24px;
+  width: 24px;
+  padding: 0;
+}
+
+/*
+  The zoom buttons are 29px, below a comfortable touch target, and pinch-zoom is
+  the natural gesture on a phone. Hide them there rather than shipping a control
+  that is awkward to hit.
+*/
+@media (pointer: coarse) {
+  .maplibregl-ctrl-group:has(.maplibregl-ctrl-zoom-in) {
+    display: none;
+  }
+}
+
+.maplibregl-ctrl-group {
+  background: rgb(9 12 17 / 0.82);
+  backdrop-filter: blur(20px) saturate(140%);
+  border: 1px solid var(--color-line);
+  box-shadow: 0 8px 24px -8px rgb(0 0 0 / 0.6);
+}
+.maplibregl-ctrl-group button {
+  background: transparent;
+}
+.maplibregl-ctrl-group button + button {
+  border-top: 1px solid var(--color-line);
+}
+.maplibregl-ctrl-group button:hover {
+  background: rgb(255 255 255 / 0.06);
+}
+/* The stock control icons are black SVGs; invert them for a dark surface. */
+.maplibregl-ctrl-group button .maplibregl-ctrl-icon {
+  filter: invert(1);
+  opacity: 0.65;
+}
+.maplibregl-ctrl-group button:hover .maplibregl-ctrl-icon {
+  opacity: 0.95;
+}
+
+.maplibregl-ctrl-attrib.maplibregl-compact {
+  background: rgb(9 12 17 / 0.82);
+  backdrop-filter: blur(12px);
+  border-radius: 6px;
+  font-size: 10px;
+}
+.maplibregl-ctrl-attrib a {
+  color: var(--color-ink-dim);
+}
+.maplibregl-ctrl-attrib-button {
+  background-color: rgb(255 255 255 / 0.5);
+}
+
+.maplibregl-canvas:focus-visible {
+  outline: 2px solid rgb(255 255 255 / 0.7);
+  outline-offset: -2px;
+}
+
+/* ============================================================================
+   Motion. Every animation in the app is defined here and every one of them is
+   switched off under prefers-reduced-motion.
+   ========================================================================= */
+
+@keyframes pulse-ring {
+  0% {
+    opacity: 0.5;
+    transform: scale(0.6);
+  }
+  70% {
+    opacity: 0;
+    transform: scale(2.4);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(2.4);
+  }
+}
+
+@keyframes fade-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+
+.animate-fade-rise {
+  animation: fade-rise 320ms var(--ease-out-soft) both;
+}
+
+.animate-breathe {
+  animation: breathe 2.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
