@@ -27,6 +27,7 @@ import {
   toWebcamGeoJson,
   toAirGeoJson,
   toWindGeoJson,
+  toPlumeOriginGeoJson,
 } from "./geojson";
 import {
   pulseLayer,
@@ -40,21 +41,32 @@ import {
 } from "./quake-layers";
 
 /**
- * Places or removes the interferogram overlay.
+ * Places, updates or removes a georeferenced image overlay.
  *
- * An `image` source must be created with a URL, so rather than keeping an empty
- * one around it is added when a product is selected and removed when it is
- * cleared. Corner order is the one MapLibre expects: top-left, top-right,
+ * An `image` source must be created with a URL, so rather than keeping an
+ * empty one around it is added when a product is selected and removed when it
+ * is cleared. Corner order is the one MapLibre expects: top-left, top-right,
  * bottom-right, bottom-left.
+ *
+ * Shared by the interferograms and the dispersal rasters. They differ only in
+ * where the pixels come from and how strongly they are drawn, and having two
+ * copies of the add/update/remove dance is how one of them ends up leaking a
+ * source.
  */
-function setInsarOverlay(map: MapLibreMap, insar: InsarOverlay | null, beforeId?: string): void {
-  if (!insar) {
-    if (map.getLayer(INSAR_LAYER)) map.removeLayer(INSAR_LAYER);
-    if (map.getSource(INSAR_SOURCE)) map.removeSource(INSAR_SOURCE);
+function setImageOverlay(
+  map: MapLibreMap,
+  ids: { source: string; layer: string },
+  overlay: ImageOverlay | null,
+  opacity: number,
+  beforeId?: string,
+): void {
+  if (!overlay) {
+    if (map.getLayer(ids.layer)) map.removeLayer(ids.layer);
+    if (map.getSource(ids.source)) map.removeSource(ids.source);
     return;
   }
 
-  const { west, south, east, north } = insar.bounds;
+  const { west, south, east, north } = overlay.bounds;
   const coordinates: [[number, number], [number, number], [number, number], [number, number]] = [
     [west, north],
     [east, north],
@@ -62,29 +74,40 @@ function setInsarOverlay(map: MapLibreMap, insar: InsarOverlay | null, beforeId?
     [west, south],
   ];
 
-  const existing = map.getSource(INSAR_SOURCE);
+  const existing = map.getSource(ids.source);
   if (existing && "updateImage" in existing) {
-    (existing as maplibregl.ImageSource).updateImage({ url: insar.imageUrl, coordinates });
+    (existing as maplibregl.ImageSource).updateImage({ url: overlay.imageUrl, coordinates });
     return;
   }
 
-  map.addSource(INSAR_SOURCE, { type: "image", url: insar.imageUrl, coordinates });
+  map.addSource(ids.source, { type: "image", url: overlay.imageUrl, coordinates });
   map.addLayer(
     {
-      id: INSAR_LAYER,
+      id: ids.layer,
       type: "raster",
-      source: INSAR_SOURCE,
-      /*
-       * Deliberately below half. The point of laying an interferogram on the
-       * map is to see deformation *with* the seismicity, and at full strength
-       * these images are vivid enough to bury every earthquake marker and the
-       * lava barriers underneath them.
-       */
-      paint: { "raster-opacity": 0.55, "raster-fade-duration": 200 },
+      source: ids.source,
+      paint: { "raster-opacity": opacity, "raster-fade-duration": 200 },
     },
     beforeId,
   );
 }
+
+/*
+ * Deliberately below half for interferograms. The point of laying one on the
+ * map is to see deformation *with* the seismicity, and at full strength these
+ * images are vivid enough to bury every earthquake marker and the lava
+ * barriers underneath them.
+ */
+const INSAR_OPACITY = 0.55;
+
+/*
+ * A dispersal raster carries IMO's own alpha, so it is already translucent
+ * where the plume is thin. Held a little under three quarters: high enough
+ * that the faint outer edge survives — the part most likely to be over
+ * somewhere populated — and low enough that the earthquakes underneath a
+ * saturated core are still findable.
+ */
+const PLUME_OPACITY = 0.72;
 
 /**
  * Registers the arrow used by the wind layer.
@@ -158,6 +181,11 @@ const FACILITY_LAYER = "reykjanes-facility";
 const FACILITY_LABEL_LAYER = "reykjanes-facility-label";
 const INSAR_SOURCE = "insar-image";
 const INSAR_LAYER = "insar-raster";
+const PLUME_SOURCE = "dispersion-image";
+const PLUME_LAYER = "dispersion-raster";
+const PLUME_ORIGIN_SOURCE = "dispersion-origin";
+const PLUME_ORIGIN_LAYER = "dispersion-origin-point";
+const PLUME_ORIGIN_LABEL_LAYER = "dispersion-origin-label";
 const GNSS_SOURCE = "gnss-stations";
 const GNSS_LAYER = "gnss-station";
 const GNSS_LABEL_LAYER = "gnss-station-label";
@@ -194,11 +222,23 @@ const ATTRIBUTION = [
 
 export type MapPadding = { top: number; right: number; bottom: number; left: number };
 
-/** The interferogram currently laid over the map, if any. */
-export type InsarOverlay = {
+/** A georeferenced image laid over the map: an interferogram or a plume frame. */
+export type ImageOverlay = {
   imageUrl: string;
   bounds: { west: number; south: number; east: number; north: number };
 };
+
+/** Kept as a name callers already use; the shape is the shared one. */
+export type InsarOverlay = ImageOverlay;
+
+/**
+ * Where the plume on the map was modelled as starting.
+ *
+ * Without it the raster is a cloud with no origin, and a reader cannot tell
+ * which of seven scenarios they are looking at — or that the shape has a
+ * source at all.
+ */
+export type PlumeSource = { latitude: number; longitude: number; label: string };
 
 export type MapViewHandle = {
   /** Frames a bounding box, respecting the current panel padding. */
@@ -221,6 +261,8 @@ type MapData = {
   stations: readonly GnssStation[];
   showStations: boolean;
   insar: InsarOverlay | null;
+  plume: ImageOverlay | null;
+  plumeSource: PlumeSource | null;
   webcams: readonly WebcamSite[];
   showWebcams: boolean;
   airStations: readonly AirQualityStation[];
@@ -275,7 +317,10 @@ function applyAll(map: MapLibreMap, data: MapData): void {
     if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", gnssVisibility);
   }
 
-  setInsarOverlay(map, data.insar, firstSymbolLayerId(map));
+  const aboveLabels = firstSymbolLayerId(map);
+  setImageOverlay(map, { source: INSAR_SOURCE, layer: INSAR_LAYER }, data.insar, INSAR_OPACITY, aboveLabels);
+  setImageOverlay(map, { source: PLUME_SOURCE, layer: PLUME_LAYER }, data.plume, PLUME_OPACITY, aboveLabels);
+  geoJsonSource(map, PLUME_ORIGIN_SOURCE)?.setData(toPlumeOriginGeoJson(data.plumeSource));
 
   geoJsonSource(map, WEBCAM_SOURCE)?.setData(toWebcamGeoJson(data.webcams));
   const webcamVisibility = data.showWebcams ? "visible" : "none";
@@ -339,6 +384,14 @@ export type MapViewProps = {
   showStations: boolean;
   /** Interferogram overlay, or null when none is selected. */
   insar: InsarOverlay | null;
+  /**
+   * One frame of a dispersal simulation, or null when none is selected.
+   *
+   * A model scenario, not an observation — see `src/domain/dispersion.ts`.
+   */
+  plume: ImageOverlay | null;
+  /** The modelled vent behind `plume`, when the run records a real one. */
+  plumeSource: PlumeSource | null;
   /** Road camera sites. */
   webcams: readonly WebcamSite[];
   showWebcams: boolean;
@@ -384,6 +437,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     stations,
     showStations,
     insar,
+    plume,
+    plumeSource,
     webcams,
     showWebcams,
     airStations,
@@ -428,6 +483,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     stations,
     showStations,
     insar,
+    plume,
+    plumeSource,
     webcams,
     showWebcams,
     airStations,
@@ -448,6 +505,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     stations,
     showStations,
     insar,
+    plume,
+    plumeSource,
     webcams,
     showWebcams,
     airStations,
@@ -793,6 +852,50 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
         "circle-stroke-width": 1.4,
         "circle-stroke-color": ["case", ["get", "active"], "#7fd4c1", "#5a6672"],
         "circle-stroke-opacity": 0.9,
+      },
+    });
+
+    map.addSource(PLUME_ORIGIN_SOURCE, {
+      type: "geojson",
+      data: { type: "FeatureCollection", features: [] },
+    });
+
+    /*
+     * The modelled vent. Drawn as an open ring rather than a filled dot so it
+     * reads as a marked position rather than as one more observation: nothing
+     * is erupting there, and a solid symbol among solid earthquake markers
+     * would suggest otherwise.
+     */
+    map.addLayer({
+      id: PLUME_ORIGIN_LAYER,
+      type: "circle",
+      source: PLUME_ORIGIN_SOURCE,
+      paint: {
+        "circle-radius": ["interpolate", ["linear"], ["zoom"], 4, 4, 10, 7],
+        "circle-color": "transparent",
+        "circle-stroke-width": 1.6,
+        "circle-stroke-color": "#e8b98a",
+        "circle-stroke-opacity": 0.95,
+      },
+    });
+
+    map.addLayer({
+      id: PLUME_ORIGIN_LABEL_LAYER,
+      type: "symbol",
+      source: PLUME_ORIGIN_SOURCE,
+      layout: {
+        "text-field": ["get", "label"],
+        "text-font": ["Open Sans Regular"],
+        "text-size": 11,
+        "text-offset": [0, 1.2],
+        "text-anchor": "top",
+        "text-padding": 6,
+        "text-allow-overlap": false,
+      },
+      paint: {
+        "text-color": "#e8b98a",
+        "text-halo-color": "#04070c",
+        "text-halo-width": 1.6,
       },
     });
 
@@ -1247,8 +1350,39 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !loadedRef.current) return;
-    setInsarOverlay(map, insar, firstSymbolLayerId(map));
+    setImageOverlay(
+      map,
+      { source: INSAR_SOURCE, layer: INSAR_LAYER },
+      insar,
+      INSAR_OPACITY,
+      firstSymbolLayerId(map),
+    );
   }, [insar]);
+
+  /*
+   * --- Dispersal raster ---
+   *
+   * Stepping through a run changes only the URL, and `updateImage` swaps the
+   * texture in place rather than tearing the source down and rebuilding it,
+   * which is what makes playback smooth rather than a flicker per hour.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !loadedRef.current) return;
+    setImageOverlay(
+      map,
+      { source: PLUME_SOURCE, layer: PLUME_LAYER },
+      plume,
+      PLUME_OPACITY,
+      firstSymbolLayerId(map),
+    );
+  }, [plume]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !loadedRef.current) return;
+    geoJsonSource(map, PLUME_ORIGIN_SOURCE)?.setData(toPlumeOriginGeoJson(plumeSource));
+  }, [plumeSource]);
 
   // --- Pulse animation --------------------------------------------------------
   useEffect(() => {

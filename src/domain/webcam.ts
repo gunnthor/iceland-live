@@ -31,6 +31,14 @@ export type WebcamView = {
   description: string;
   /** Published image URL, rewritten to our proxy. */
   imageUrl: string;
+  /**
+   * Where to ask what earlier frames of this view the server still holds.
+   *
+   * Built alongside `imageUrl` so both forms of the same camera are derived
+   * in one place; the reel endpoint puts the source through the same
+   * allowlist before it hashes it.
+   */
+  reelUrl: string;
 };
 
 /**

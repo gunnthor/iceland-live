@@ -33,6 +33,10 @@ export function toWebcamProxyUrl(publishedUrl: string): string {
   return `/api/webcams/image?src=${encodeURIComponent(publishedUrl)}`;
 }
 
+export function toWebcamReelUrl(publishedUrl: string): string {
+  return `/api/webcams/reel?src=${encodeURIComponent(publishedUrl)}`;
+}
+
 type RawCamera = {
   Maelist_nr?: unknown;
   Myndavel?: unknown;
@@ -92,6 +96,7 @@ export function normalizeWebcams(payload: unknown): WebcamSite[] {
       id: `${id}-${image.split("/").pop() ?? site.views.length}`,
       description: str(raw.Skyring) ?? name,
       imageUrl: toWebcamProxyUrl(image),
+      reelUrl: toWebcamReelUrl(image),
     };
 
     // The feed occasionally repeats a row; keep one of each image.

@@ -1,128 +1,165 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { WebcamSite } from "@/domain/webcam";
+import type { WebcamSite, WebcamView } from "@/domain/webcam";
 import { cn } from "@/lib/format";
+import { formatClock, formatRelative } from "@/lib/time";
 
 /**
  * A camera site, at a size worth looking at.
  *
  * ## These are stills, not video
  *
- * Vegagerðin publishes periodically refreshed JPEGs — measured at a few minutes
- * between updates — and exposes no video stream. Calling this live footage would
- * be a small lie that a reader would notice the moment they watched it, so the
- * viewer refreshes on a timer, shows how old the picture is, and says plainly
- * what it is.
+ * Vegagerðin publishes periodically refreshed JPEGs and exposes no video
+ * stream. Calling this live footage would be a small lie a reader would notice
+ * the moment they watched it, so the viewer refreshes on a timer, says plainly
+ * what it is, and lets the reader step back through earlier frames.
  *
- * Frames fetched during the session are kept so they can be stepped through.
- * That is the nearest honest thing to footage: it is genuinely what the camera
- * saw, just assembled here rather than streamed.
+ * ## Where the earlier frames come from
+ *
+ * The server keeps what it has already fetched (`src/server/frame-store.ts`),
+ * so opening a camera can show the stretch before you arrived rather than a
+ * single picture. It holds only what someone was watching, though, so a short
+ * reel means nobody had this camera open — not that the camera was down. The
+ * panel says which.
  */
 
 /**
  * How often to ask for a new frame.
  *
- * Measured against a live camera, the published image changes roughly every two
- * minutes. Polling faster than the source updates just collects duplicate
- * frames and asks Vegagerðin for bytes nobody needs.
+ * Cadence varies by camera: a busy urban view was measured publishing every
+ * minute, a rural one had not moved in seven. Two minutes sits between them —
+ * fast enough to keep up with the frequent cameras without asking the slow
+ * ones for a picture they have already given us four times over. The repeats
+ * that do occur are recognised server-side and discarded rather than stored.
  */
 const REFRESH_MS = 120_000;
-/** Frames kept per view — half an hour at the rate above. */
-const MAX_FRAMES = 15;
 
-type Frame = { key: number; url: string };
+type StoredFrame = { at: string; url: string };
+
+type ReelResponse = { ok: true; view: string; frames: StoredFrame[] } | { ok: false };
 
 /**
- * Collects frames for one camera view.
+ * The frames the server holds for this view, refreshed alongside the picture.
  *
- * The component is keyed by its image URL, so switching camera remounts it and
- * the reel starts fresh from the state initialiser. That is why there is no
- * effect here resetting state when the prop changes — remounting does it, and
- * does it without an extra render.
+ * The live request carries `record=1`, which is what files the current frame
+ * away; the reel fetch that follows a couple of minutes later then picks it
+ * up. So watching a camera is what builds its history, and the next person to
+ * open it inherits the result.
  */
-function useFrames(imageUrl: string, active: boolean): Frame[] {
-  const [frames, setFrames] = useState<Frame[]>(() => [
-    { key: Date.now(), url: `${imageUrl}&t=${Date.now()}` },
-  ]);
+function useReel(view: WebcamView): { stored: StoredFrame[]; liveKey: number } {
+  const [stored, setStored] = useState<StoredFrame[]>([]);
+  const [liveKey, setLiveKey] = useState(() => Date.now());
 
   useEffect(() => {
-    if (!active) return;
+    const controller = new AbortController();
+
+    const load = async () => {
+      try {
+        const response = await fetch(view.reelUrl, {
+          signal: controller.signal,
+          headers: { accept: "application/json" },
+          cache: "no-store",
+        });
+        const body = (await response.json()) as ReelResponse;
+        if (controller.signal.aborted || !body.ok) return;
+        setStored(body.frames);
+      } catch {
+        // No reel is an ordinary outcome; the live picture is unaffected.
+      }
+    };
+
+    void load();
+
     const timer = setInterval(() => {
       if (document.hidden) return;
-      const key = Date.now();
-      setFrames((existing) =>
-        [...existing, { key, url: `${imageUrl}&t=${key}` }].slice(-MAX_FRAMES),
-      );
+      setLiveKey(Date.now());
+      void load();
     }, REFRESH_MS);
-    return () => clearInterval(timer);
-  }, [imageUrl, active]);
 
-  return frames;
+    return () => {
+      controller.abort();
+      clearInterval(timer);
+    };
+  }, [view.reelUrl]);
+
+  return { stored, liveKey };
 }
 
-function ViewPlayer({ imageUrl, alt }: { imageUrl: string; alt: string }) {
-  const frames = useFrames(imageUrl, true);
+function ViewPlayer({ view }: { view: WebcamView }) {
+  const { stored, liveKey } = useReel(view);
   const [index, setIndex] = useState<number | null>(null);
   const [failed, setFailed] = useState(false);
 
-  // Following the live edge unless the reader has stepped back.
-  const shown = index === null ? frames.length - 1 : Math.min(index, frames.length - 1);
-  const frame = frames[shown];
-  const live = shown === frames.length - 1;
+  /*
+   * The reel is the stored frames with the live picture on the end. The last
+   * stored frame is often the same photograph as the live one — the camera
+   * has not published since — and that is left visible rather than guessed
+   * away: the two carry different labels, and "the last two frames look the
+   * same" is a true thing to be able to see.
+   */
+  const total = stored.length + 1;
+  const shown = index === null ? total - 1 : Math.min(index, total - 1);
+  const live = shown === total - 1;
+  const frame = live ? null : stored[shown];
 
   return (
     <figure className="m-0">
       <div className="relative">
-        {failed ? (
+        {failed && live ? (
           <div className="flex aspect-[4/3] w-full items-center justify-center rounded border border-[var(--color-line)] bg-white/[0.02]">
             <span className="text-[11px] text-[var(--color-ink-faint)]">Image unavailable</span>
           </div>
         ) : (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={frame?.url}
-            alt={alt}
+            src={
+              live
+                ? `${view.imageUrl}&record=1&t=${liveKey}`
+                : (frame?.url ?? view.imageUrl)
+            }
+            alt={view.description}
             onError={() => setFailed(true)}
+            onLoad={() => setFailed(false)}
             className="aspect-[4/3] w-full rounded border border-[var(--color-line)] bg-black object-cover"
           />
         )}
 
         <span
           className={cn(
-            "absolute left-2 top-2 rounded px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide",
+            "tnum absolute left-2 top-2 rounded px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide",
             live
               ? "bg-[var(--color-alert-green)]/20 text-[var(--color-alert-green)]"
-              : "bg-black/60 text-[var(--color-ink-muted)]",
+              : "bg-black/70 text-[var(--color-ink-muted)]",
           )}
         >
-          {live ? "Latest" : `${frames.length - shown - 1} back`}
+          {live ? "Latest" : formatClock(frame?.at ?? 0)}
         </span>
       </div>
 
       <figcaption className="mt-1 flex items-center justify-between gap-2">
         <span className="truncate text-[10px] leading-tight text-[var(--color-ink-faint)]">
-          {alt}
+          {view.description}
         </span>
-        {frames.length > 1 && (
+        {total > 1 && (
           <span className="flex shrink-0 items-center gap-1">
             <button
               type="button"
               onClick={() => setIndex(Math.max(0, shown - 1))}
               disabled={shown === 0}
-              aria-label="Previous frame"
+              aria-label="Earlier frame"
               className="rounded px-1.5 py-1 text-[11px] text-[var(--color-ink-dim)] transition-colors hover:text-[var(--color-ink)] disabled:opacity-30"
             >
               &larr;
             </button>
             <span className="tnum text-[10px] text-[var(--color-ink-faint)]">
-              {shown + 1}/{frames.length}
+              {shown + 1}/{total}
             </span>
             <button
               type="button"
-              onClick={() => setIndex(shown + 1 >= frames.length - 1 ? null : shown + 1)}
+              onClick={() => setIndex(shown + 1 >= total - 1 ? null : shown + 1)}
               disabled={live}
-              aria-label="Next frame"
+              aria-label="Later frame"
               className="rounded px-1.5 py-1 text-[11px] text-[var(--color-ink-dim)] transition-colors hover:text-[var(--color-ink)] disabled:opacity-30"
             >
               &rarr;
@@ -130,6 +167,13 @@ function ViewPlayer({ imageUrl, alt }: { imageUrl: string; alt: string }) {
           </span>
         )}
       </figcaption>
+
+      {stored.length > 0 && (
+        <p className="tnum mt-0.5 text-[10px] leading-tight text-[var(--color-ink-faint)]">
+          {stored.length} earlier {stored.length === 1 ? "frame" : "frames"} held, back to{" "}
+          {formatRelative(stored[0]?.at ?? 0)}
+        </p>
+      )}
     </figure>
   );
 }
@@ -185,21 +229,18 @@ export function WebcamViewer({
         <div className="mt-3 space-y-3">
           {site.views.map((view) => (
             /* Keyed by URL so switching camera remounts with a fresh reel. */
-            <ViewPlayer
-              key={view.imageUrl}
-              imageUrl={view.imageUrl}
-              alt={view.description}
-            />
+            <ViewPlayer key={view.imageUrl} view={view} />
           ))}
         </div>
 
         <p className="mt-4 border-t border-[var(--color-line)] pt-3 text-[11px] leading-relaxed text-[var(--color-ink-faint)]">
-          These are still images, not video: the cameras publish a new frame about
-          every two minutes and there is no stream to watch. This page collects the
-          frames while it is open, so you can step back through what the camera
-          actually saw. Based on information provided by the
-          Icelandic Road and Coastal Administration (IRCA). Iceland Live is not
-          affiliated with IRCA.
+          These are still images, not video: the cameras publish a new frame every
+          minute or few, and there is no stream to watch. Earlier frames are the
+          ones this server has already fetched, so the reel reaches back only as
+          far as somebody was watching &mdash; a short reel means nobody had this
+          camera open, not that the camera was down. Based on information provided
+          by the Icelandic Road and Coastal Administration (IRCA). Iceland Live is
+          not affiliated with IRCA.
         </p>
       </div>
     </section>

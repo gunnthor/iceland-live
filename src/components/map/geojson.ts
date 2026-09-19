@@ -234,3 +234,27 @@ export function toWindGeoJson(
       })),
   };
 }
+
+/**
+ * The modelled source of the dispersal run on the map, as a one-point layer.
+ *
+ * `label` is the volcano's name and nothing more. It deliberately carries no
+ * status, colour code or plume height: a caption beside a plume is read as a
+ * claim about that volcano, and the only claim supportable here is "this is
+ * where the model put the source".
+ */
+export function toPlumeOriginGeoJson(
+  source: { latitude: number; longitude: number; label: string } | null,
+): GeoJSON.FeatureCollection {
+  if (!source) return { type: "FeatureCollection", features: [] };
+  return {
+    type: "FeatureCollection",
+    features: [
+      {
+        type: "Feature",
+        geometry: { type: "Point", coordinates: [source.longitude, source.latitude] },
+        properties: { label: source.label },
+      },
+    ],
+  };
+}

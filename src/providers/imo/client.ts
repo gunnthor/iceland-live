@@ -21,6 +21,12 @@ export const IMO_API_VERSIONS = {
   volcanoes: process.env.IMO_VOLCANOES_API_VERSION ?? "2026-06-04",
   cap: process.env.IMO_CAP_API_VERSION ?? "2026-04-14",
   epos: process.env.IMO_EPOS_API_VERSION ?? "2026-02-05",
+  /*
+   * The dispersion service versions itself independently of EPOS and rejects
+   * anything it does not recognise with HTTP 415 — including EPOS's own
+   * version string, which is how this was found.
+   */
+  dispersion: process.env.IMO_DISPERSION_API_VERSION ?? "2025-08-13",
 } as const;
 
 export type ImoService = keyof typeof IMO_API_VERSIONS;

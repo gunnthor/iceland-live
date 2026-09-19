@@ -11,6 +11,7 @@ import type { EarthquakeStats } from "@/analytics/stats";
 import type { Summary } from "@/analytics/summary";
 import type { OfficialAlert } from "./alert";
 import type { GnssStation, Interferogram } from "./deformation";
+import type { DispersionRun } from "./dispersion";
 import type { AirQualityStation } from "./air-quality";
 import type { RoadCondition, RoadWeatherStation } from "./roads";
 import type { WebcamSite } from "./webcam";
@@ -146,3 +147,19 @@ export type EnvironmentResponse = {
 };
 
 export type EnvironmentResult = EnvironmentResponse | ApiErrorResponse;
+
+/**
+ * Dispersal simulations.
+ *
+ * An empty `runs` list is an ordinary answer meaning IMO has no current runs,
+ * not a failure. Every run is a model scenario: see `src/domain/dispersion.ts`
+ * for why nothing built on this may imply an eruption.
+ */
+export type DispersionResponse = {
+  ok: true;
+  generatedAt: string;
+  runs: DispersionRun[];
+  meta: ProviderMeta;
+};
+
+export type DispersionResult = DispersionResponse | ApiErrorResponse;

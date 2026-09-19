@@ -17,6 +17,15 @@ export type WebcamsState = {
  * Only the catalogue — where the cameras are. The pictures are ordinary
  * `<img>` loads against our proxy, so they refresh by changing a cache-busting
  * key rather than by anything this hook does.
+ *
+ * The one-shot guard records what has been **received**, not what has been
+ * started. Setting it before the request looks equivalent and is not: React
+ * mounts effects twice under Strict Mode, so the first attempt is aborted by
+ * its own cleanup, and a flag set up front makes the second attempt decline to
+ * run. The catalogue then never arrives and the panel sits on "Loading
+ * cameras…" forever. Recording the arrival instead means an aborted attempt
+ * leaves nothing behind, and a failure still allows a retry when the layer is
+ * switched on again.
  */
 export function useWebcams(enabled: boolean): WebcamsState {
   const [state, setState] = useState<{
@@ -24,11 +33,10 @@ export function useWebcams(enabled: boolean): WebcamsState {
     attribution: string | null;
     unavailable: boolean;
   }>({ sites: [], attribution: null, unavailable: false });
-  const requested = useRef(false);
+  const received = useRef(false);
 
   useEffect(() => {
-    if (!enabled || requested.current) return;
-    requested.current = true;
+    if (!enabled || received.current) return;
 
     const controller = new AbortController();
 
@@ -40,6 +48,7 @@ export function useWebcams(enabled: boolean): WebcamsState {
         });
         const body = (await response.json()) as WebcamsResult;
         if (controller.signal.aborted) return;
+        received.current = body.ok;
         setState(
           body.ok
             ? { sites: body.sites, attribution: body.attribution, unavailable: false }
@@ -49,7 +58,6 @@ export function useWebcams(enabled: boolean): WebcamsState {
         if (!controller.signal.aborted) {
           setState({ sites: [], attribution: null, unavailable: true });
         }
-        requested.current = false;
       }
     })();
 

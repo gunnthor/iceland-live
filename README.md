@@ -73,15 +73,24 @@ not built yet.
 - **Depth over time** — depth against time for any observation's events, so a
   cluster confined to one level reads differently from one spanning the crust.
 - **Live road cameras** — Vegagerðin's national network, ordered by distance from
-  wherever the activity is. Select one on the map or in the list to watch it: the
-  viewer refreshes on the cameras' own two-minute cadence and keeps the frames it
-  collects, so you can step back through what the camera saw.
+  wherever the activity is. Select one on the map or in the list to watch it. These
+  are stills, not video, and there is no stream to give you; the viewer polls every
+  two minutes and steps back through the frames **the server** has collected, so the
+  reel can reach past the moment you arrived.
 - **Air & roads** — SO₂, H₂S and particulates from the Environment and Energy
   Agency's monitoring network, each with its last 24 hours as a sparkline and a
   rising/falling note; live wind drawn as downwind arrows; and every road segment
   that is not plainly clear, drawn on the map.
+- **Air on the earthquake timeline** — the selected station's series drawn under
+  the activity histogram on exactly the same x-axis, so a gas episode and a swarm
+  can be read against one another. Shown together, never correlated.
+- **Dispersal simulations** — IMO's tephra and SO₂ dispersal runs, the raster laid
+  over the map in Web Mercator with IMO's own colour scale, steppable hour by hour
+  across the forecast window. **These model eruptions that are not happening**: IMO
+  produces them several times a day for selected volcanoes so the answer exists if
+  one ever starts, and the panel says so before it lists anything.
 - **Quick-focus viewpoints** for Iceland, Reykjanes and Grindavík.
-- **Shareable URLs** — `?range=7d&event=<id>&volcanoes=1&reykjanes=1&deformation=1&cams=1&air=1&insar=<id>`.
+- **Shareable URLs** — `?range=7d&event=<id>&volcanoes=1&reykjanes=1&deformation=1&cams=1&air=1&plume=1&insar=<id>&run=<uuid>`.
 
 ---
 
@@ -427,12 +436,49 @@ Administration (IRCA)"* — is in `IRCA_ATTRIBUTION` and is rendered wherever th
 images appear, alongside a note that we are not affiliated with them.
 
 **Watching a camera.** There is no video: Vegagerðin publishes periodically
-refreshed JPEGs and exposes no stream, which was confirmed by probing for one and
-by watching a camera's `Last-Modified` header — it changed once in 121 seconds.
-The viewer therefore refreshes at that measured cadence rather than faster, says
-plainly that these are stills, and keeps the frames fetched during the session so
-they can be stepped through. That is the nearest honest thing to footage: it is
-genuinely what the camera saw, assembled here rather than streamed.
+refreshed JPEGs and exposes no stream, confirmed by probing for one and by
+watching `Last-Modified` headers. The cadence varies by camera — a busy urban
+view publishes every minute, a rural one had not moved in seven — so the viewer
+polls every two minutes, which sits between them, says plainly that these are
+stills, and lets the reader step back through earlier frames.
+
+**The frame store** (`src/server/frame-store.ts`) is what makes "earlier
+frames" reach past the current session. Vegagerðin publishes only the current
+picture and offers no archive, so a reel can only be built out of frames
+somebody already fetched — and a browser that has just opened the page has
+fetched exactly one. That is the wrong way round for what these cameras are
+for: nobody has the page open for an hour *before* something happens.
+
+The image proxy therefore files each frame away on its way past, when asked
+with `record=1`, and `/api/webcams/reel` reports what is held. Watching a
+camera is what builds its history, and the next person to open it inherits the
+result.
+
+- **Opt-in, not automatic.** The same proxy serves the thumbnails in the camera
+  list; recording those would spread a fixed budget across every camera on the
+  page instead of concentrating it on the one being watched.
+- **Timed by the camera's clock**, from `Last-Modified`, not ours. Two viewers
+  polling on different schedules would otherwise store the same picture twice
+  under different times, and the reel would claim a frame rate the camera does
+  not have. Repeats are recognised by `ETag` as well.
+- **Bounded**: 30 frames per view, 40 views, six hours, and a hard byte budget
+  (`ICELAND_LIVE_FRAME_BUDGET_MB`, default 64). Over budget, the oldest frames
+  go from *every* reel rather than one camera being emptied, and no view is
+  ever left with nothing.
+- **Best-effort, like the disk cache.** Every failure is swallowed and logged
+  once. A recorder that can break the live image it is recording is worse than
+  no recorder.
+- **Per instance.** On a platform like Vercel only `os.tmpdir()` is writable,
+  it is not shared between instances and it does not survive indefinitely, so
+  two readers may see different reels. That is acceptable for something
+  explicitly labelled "frames this server happens to hold" — and the viewer
+  says exactly that, including that a short reel means nobody was watching
+  rather than that the camera was down.
+
+Keys are a SHA-256 prefix of the source URL, so nothing a caller sends names a
+path; `/api/webcams/frame` additionally checks a frame is indexed before
+touching the disk, and `/api/webcams/reel` puts `src` through the image
+proxy's allowlist before hashing it.
 
 Míla's volcano livestreams are real video but are published through YouTube with
 no machine-readable listing, and their stream identifiers change between
@@ -462,19 +508,105 @@ The same payload carries each system's official **aviation colour code** (from i
 most recent VONA notice) and its **VALS volcanic alert level**. Both are IMO's
 assessments and are shown as such.
 
+### Dispersal simulations — Dispersion API (pinned `2025-08-13`) + EPOS
+
+```
+GET https://api.vedur.is/epos/volcano/hazard/maps/probabilistic-modelling-based/dispersion-ash-gas
+GET https://api.vedur.is/dispersion/simulations/{uuid}
+GET https://api.vedur.is/dispersion/raster?uuid=&model_type=&dispersion_type=&altitude=&altitude_unit=&time=&srid=&filetype=
+```
+
+**Read this part before the endpoints.** IMO runs dispersal models several times
+a day for eruptions at a handful of selected volcanoes, each with a preset
+column height, so that the answer exists if one ever starts. On an ordinary day
+— which is nearly every day — **none of the eruptions being modelled is
+happening.** IMO's own description of the service says the simulations are for
+"hypothetical eruptions at key selected Icelandic volcanoes", and that "in case
+of real eruption, the service will provide access to the simulations produced
+for the ongoing event".
+
+Nothing in the published record distinguishes the two. A contingency run and a
+run for a real event carry the same fields, the same model and the same
+`product_type: Forecast`; some scenario names contain the word "hypothetical"
+and others do not, which is a naming habit and not a flag. So the interface
+states what a run *is* — a scenario, with its assumptions on the row — and never
+what it means, and it points at IMO's aviation colour codes and official
+warnings for whether anything is actually under way.
+
+**Two services, joined.** Neither is sufficient alone:
+
+| | catalogue (EPOS) | run record (Dispersion) |
+|---|---|---|
+| volcano name | ✅ | ✗ (coordinates only) |
+| hazard type, model, validity | ✅ | partial |
+| model grid bounds | ✗ | ✅ |
+| available output layers | ✗ | ✅ |
+
+They join on the run UUID, which the catalogue embeds in its
+`product_reference` link to IMO's own viewer. The UUID is matched against a
+UUID pattern rather than read as "whatever follows the equals sign", because it
+goes into an upstream request path.
+
+**Version pinning.** `/dispersion` versions itself independently of `/epos` and
+answers **415** to anything it does not recognise — including EPOS's own version
+string, which is how the separate pin was found. Both are in `IMO_API_VERSIONS`.
+
+**Reducing 276 entries to seven.** IMO reruns the same scenarios several times a
+day, so most of the catalogue is older copies of the current list. We keep the
+newest entry per `(volcano, scenario)`, drop anything created more than 48 hours
+ago *before* issuing any per-run request, cap the fan-out at 12, and then drop
+any run whose forecast window has already elapsed. That last filter also applies
+to a stale cached snapshot: everything else here degrades by getting older, but
+a forecast window that has ended is no longer a forecast.
+
+**Frames.** Verified against the service, not assumed: rasters are hourly, the
+first is one hour *after* `start_time` (the start instant itself answers 404,
+because nothing has dispersed yet) and the last is exactly
+`start_time + duration`. Times are sent naive — a trailing `Z` makes the
+endpoint answer **500**.
+
+**`srid=3857`, fixed by us and never taken from the caller.** MapLibre maps a
+raster onto four corners by interpolating in Web Mercator, so a plate carrée
+image would be stretched in latitude — visibly, and wrongly, at Iceland's
+latitudes. Asking IMO for Mercator makes the interpolation exact. Confirmed by
+arithmetic: the returned image is 461×384 for bounds spanning 39.97° of
+longitude and 60–72.95° of latitude, an aspect of 1.201 against a computed
+Mercator aspect of 1.201. The plate carrée version of the same frame is
+571×185, aspect 3.086 — which is the ratio of the raw degree spans.
+
+**The raster proxy relays no URL.** Unlike the interferogram and camera proxies,
+nothing here forwards an address. Every parameter is validated against the
+values IMO's own OpenAPI description declares — model, dispersion type,
+altitude unit, an integer altitude, a parseable time, a UUID — and the upstream
+URL is then built from those alone. There is no input that could name a
+different host. A 404 from upstream is passed through as a 404 rather than a
+502, because "no frame at that time" is ordinary and "IMO is down" is not.
+
+**The colour scale is IMO's**, transcribed from the legend their own dispersion
+viewer ships (12 steps for NAME, 6 for CALPUFF). A colour-to-concentration
+mapping invented here would turn a picture into a number we have no basis for,
+so each run also links to IMO's viewer.
+
+**Gas runs have not been produced since 18 September 2025.** The CALPUFF SO₂
+scenarios ran daily through the Sundhnúkur eruption series and stop there; every
+current run is tephra (NAME). The code handles both identically and the panel
+simply lists what exists, so gas returns on its own when IMO resumes it.
+
 ### Researched, architected for, not yet integrated
 
 `src/providers/` is shaped so these plug in without touching feature code:
 
 - **EPOS API** (`/epos`, 29 endpoints) — webcams, plume height, ground-based radar
-  and DOAS, InSAR interferograms, shakemaps, GNSS stations and RINEX, SO₂ and tephra
-  hazard maps, ash/gas dispersion forecasts, eruption catalogue and imagery.
+  and DOAS, shakemaps, RINEX, SO₂ and tephra hazard maps, eruption catalogue and
+  imagery. InSAR interferograms, GNSS stations and the ash/gas dispersal
+  catalogue are in use.
 - **CAP API** — Meteoalarm feeds and the historical archive
   (`/capbroker/sent/from/…`). The active-warnings path is in use; these are not.
 - **GIS API** (`/gis/layers`) — 36 indexed layers. Four are in use for Reykjanes;
   the rest include glacier outlines, SIL station locations, high-temperature
   geothermal areas, South Iceland seismic fractures and Holocene eruptive fissures.
-- **Weather API** (`/weather`), **Dispersion**, **Glaciers**.
+- **Weather API** (`/weather`) and **Glaciers**. The **Dispersion API** is in
+  use for simulations and rasters; its per-location graph endpoint is not.
 - Non-IMO: air quality (Environment and Energy Agency), road conditions
   (Vegagerðin / Umferðin), road weather stations, webcams.
 
@@ -489,6 +621,7 @@ src/
 │   ├── earthquake-detail.ts   Measured values, isFixedDepth
 │   ├── alert.ts         OfficialAlert — IMO's assessment, never ours
 │   ├── deformation.ts   Interferogram, GnssStation
+│   ├── dispersion.ts    DispersionRun, frame times, IMO's colour scale
 │   ├── region-history.ts  a year of per-region daily counts
 │   ├── webcam.ts        WebcamSite, IRCA attribution
 │   ├── air-quality.ts   AirQualityStation, Reading, verification state
@@ -502,6 +635,7 @@ src/
 │   ├── types.ts         EarthquakeProvider, VolcanoProvider, ProviderResult, ProviderError
 │   ├── registry.ts      The one place that picks an implementation
 │   ├── imo/             client · quakes · detail · volcanoes · CAP · EPOS
+│   │                    dispersion (catalogue + run records)
 │   ├── gis/             WFS client · Reykjanes layers (lava, barriers, graben)
 │   ├── vegagerdin/      road cameras · road weather · road condition geometry
 │   ├── ust/             air quality
@@ -517,6 +651,8 @@ src/
 │   ├── deformation.ts   interferograms + GNSS network
 │   ├── region-history.ts  the year that baselines compare against
 │   ├── disk-cache.ts    best-effort accelerator for expensive derived data
+│   ├── frame-store.ts   bounded disk-backed reel of camera frames
+│   ├── dispersion.ts    current dispersal runs
 │   ├── environment.ts   air quality + roads
 │   └── webcams.ts
 │
@@ -531,17 +667,19 @@ src/
 │   ├── page.tsx         Server-renders the first payload
 │   └── api/             /api/earthquakes[/:id] · /api/alerts · /api/volcanoes
 │                        /api/reykjanes · /api/insar[/image]
-│                        /api/webcams[/image] · /api/environment
+│                        /api/webcams[/image|/reel|/frame] · /api/environment
+│                        /api/dispersion[/raster]
 │
 ├── components/
 │   ├── map/             MapView, base-style tuning, layer specs, GeoJSON builders
-│   ├── charts/          Timeline · DepthProfile · Sparkline
+│   ├── charts/          Timeline · DepthProfile · Sparkline · AirTrace
 │   ├── ui/              Panels, feed, detail, controls, states
 │   └── AppShell.tsx     Orchestration and layout
 │
 ├── hooks/           useEarthquakeData · useEarthquakeDetail · useAlerts
 │                  useReykjanesLayer · useDeformation · useWebcams
-│                  useEnvironment · useUrlState · useNow · useMediaQuery
+│                  useEnvironment · useDispersion · useUrlState · useNow
+│                  useMediaQuery
 └── lib/             time · format · geo · simplify
 ```
 
@@ -621,6 +759,10 @@ on screen instead of an empty map. Concurrent callers share one in-flight fetch.
 | `/api/insar/image` | `max-age=31536000, immutable` | — (proxied, immutable) |
 | `/api/webcams` | `s-maxage=21600, swr=604800` | 6h / 7d (catalogue only) |
 | `/api/webcams/image` | `s-maxage=60, swr=120` | — (proxied, deliberately short) |
+| `/api/webcams/reel` | `no-store` | — (per instance; see the frame store) |
+| `/api/webcams/frame` | `max-age=3600, immutable` | — (one picture, one instant) |
+| `/api/dispersion` | `s-maxage=900, swr=3600` | 15min / 6h |
+| `/api/dispersion/raster` | `max-age=31536000, immutable` | — (proxied, immutable) |
 | `/api/environment` | `s-maxage=300, swr=900` | 5min / 1h |
 
 The year of region history is cached separately for 24 hours and kept for a
@@ -642,13 +784,24 @@ and swallowed — a cache that can take down the thing it accelerates is worse
 than no cache. On serverless only `os.tmpdir()` is writable and it is per
 instance, which still helps repeated cold starts on a warm instance. Set
 `ICELAND_LIVE_CACHE_DIR` to point it at a persistent volume where one exists.
+
+The camera frame store (`src/server/frame-store.ts`) lives under the same
+directory and follows the same rules, with one difference in kind: it is the
+only thing here that is not a cache of something fetchable on demand. Once a
+camera publishes its next picture the previous one is gone from upstream
+forever, so a frame we drop is not re-derivable. That is precisely why it is
+bounded and labelled rather than trusted — see
+[Road cameras](#road-cameras--vegagerðin-open-data).
 | any of them, degraded | `no-store` | — |
 
 The stale windows are not uniform, and the differences are deliberate. Six hours
 of stale earthquakes is acceptable because an out-of-date map of past seismicity
 is still true. Thirty minutes is the limit for warnings, because a lapsed warning
 is not. Reykjanes geometry is kept for a week because those surveys are finished
-and will never change. Per-event detail is keyed by event id, which is unbounded,
+and will never change. Dispersal rasters are immutable for the opposite
+reason: a run's UUID identifies one finished set of model output, so the bytes
+behind a frame can never change — which is what makes stepping through 48 of
+them cheap. Per-event detail is keyed by event id, which is unbounded,
 so that cache is size-capped as well as time-capped.
 
 Degraded responses are `no-store` so a CDN never pins an outage state in place after
@@ -760,6 +913,19 @@ the code is written to make that hard to forget.
 - **We do not draw hazard zones.** The Catalogue publishes volcanic systems as line
   work, so we draw lines. A filled polygon reads as a zone with an inside and an
   outside — a claim this dataset does not make.
+- **A simulation is never presented as a forecast of an event.** IMO's dispersal
+  runs model eruptions at selected volcanoes several times a day whether or not
+  anything is happening. The panel says so above the list, every row carries the
+  plume height as an assumption the model was *given*, and nothing anywhere
+  implies an eruption is expected. Because the published record does not
+  distinguish a contingency run from one produced for a real event, the code
+  declines to claim either — and points the reader at IMO's aviation colour
+  codes and warnings for the thing these products cannot tell them.
+- **Two series on one axis are not a correlation.** The air trace shares the
+  earthquake timeline's clock so a reader can see a gas episode against a swarm.
+  No correlation is computed and none is implied; the caption says the two are
+  shown together, not compared, and the station's classification stays on screen
+  because a still day over a busy road moves these numbers too.
 - **Missing is not zero.** A depth of `0 km` and an unreported depth are different
   facts and render differently (`0.0 km` versus `—`).
 - **No activity index.** A LOW/MODERATE/ELEVATED/HIGH badge is on the roadmap only as
@@ -853,9 +1019,30 @@ that is where upstream reality meets our assumptions.
   enumerating Vegagerðin's ArcGIS server, not from published documentation, so it
   carries no stability promise. The layer fails softly: losing it costs the map
   layer, not the conditions list.
-- **Road cameras are stills, not video.** Measured at roughly one new frame every
-  two minutes. The viewer collects frames while the page is open, so stepping
-  back only reaches as far as the session does.
+- **Road cameras are stills, not video.** Publish cadence varies by camera — a
+  busy urban view publishes every minute, a rural one had not moved in seven —
+  and the viewer polls every two minutes, so it both misses frames on the fast
+  cameras and re-fetches pictures it already has from the slow ones. The
+  repeats are recognised and discarded rather than stored.
+- **A camera's reel is only as long as someone was watching.** The server keeps
+  what it has fetched, so a camera nobody has opened has one frame. A short reel
+  means a lack of attention, not a camera fault, and the viewer says so. The
+  store is also per instance and not durable, so two readers may see different
+  reels.
+- **A dispersal run is a scenario, not a prediction.** Every one of them models
+  an eruption that is, on almost every day, not happening. Nothing published
+  distinguishes a contingency run from one produced for a real event, so this
+  product does not try to — see
+  [Scientific integrity](#scientific-integrity).
+- **The dispersal raster carries no numbers, only IMO's colours.** We reproduce
+  their legend; we do not sample the image or quote a concentration from it.
+  Each run links to IMO's own viewer, which does.
+- **Gas dispersal is dormant upstream.** The last CALPUFF SO₂ run was produced
+  on 18 September 2025, so in practice the panel currently shows tephra only.
+- **The air trace covers 24 hours, so wider windows show nothing.** The network
+  publishes about a day of hourly averages. Rather than pin that against the
+  right-hand edge of a 7- or 30-day chart — which would read as six quiet days
+  instead of six days we were not told about — the panel says what it has.
 - **Air trends are crude by design.** "Rising" compares the mean of the last third
   of the 24-hour series with the rest and reports nothing below a 20% change. It
   describes the recent series; it does not extrapolate.
@@ -888,25 +1075,28 @@ that is where upstream reality meets our assumptions.
 
 **Next up**
 
-1. **Persist frames server-side for the cameras.** The viewer can only step back
-   as far as the current session, because frames are collected in the browser.
-   Storing a rolling window per camera would make a genuine time-lapse available
-   the moment someone opens it — which during unrest is exactly when nobody has
-   had the page open for an hour beforehand.
-2. **Dispersion forecasts.** IMO's EPOS gateway publishes daily ash and gas
-   dispersion products (`/hazard/maps/probabilistic-modelling-based/dispersion-ash-gas`).
-   Paired with the live wind already on the map, that is the difference between
-   "where the gas is" and "where it is going", from IMO's own model rather than
-   anything inferred here.
-3. **Air quality alongside the earthquake timeline.** The two are on the same
-   clock and currently in different panels. Putting an SO₂ trace under the
-   activity chart for a selected region would let a reader see a gas episode
-   against the seismicity that preceded it.
+1. **A recorder for the cameras that matter, not just the ones being watched.**
+   The frame store fills only while somebody has a camera open, which is
+   honest but leaves the Reykjanes cameras blank at exactly the moment the
+   first person arrives. A scheduled job polling a short, named list — the
+   Grindavíkurvegur, Suðurstrandarvegur and Krýsuvíkurvegur views — would mean
+   the reel is already there. Needs a cron and durable storage, so it is a
+   deployment change as much as a code one.
+2. **Gas dispersal, when IMO resumes it.** Every current run is tephra; the
+   CALPUFF SO₂ scenarios stopped in September 2025. The code path already
+   handles them, but the interface is built around ash: pairing a gas raster
+   with the ground stations already on the map — model beside measurement, both
+   labelled — is the version of this feature that answers a question people
+   actually ask.
+3. **Observations on the air trace.** The trace shares the timeline's clock but
+   nothing marks where the statistical observations fall on it. Drawing the
+   observation windows as shaded bands under both charts would let a reader see
+   a gas episode and a swarm line up, without any claim that they are related.
 
 **Later**
 
 - *Volcano mode* — EPOS shakemaps, eruption imagery, tephra and SO₂ hazard maps.
-- *Air* — historical series, dispersion forecasts, volcanic pollution overlays.
+- *Air* — historical series, volcanic pollution overlays.
 - *Weather* — wind, precipitation, temperature, alerts.
 - *Historical analytics* — is activity increasing, how unusual is today, where has
   activity migrated. Requires great care to keep description separate from

@@ -24,21 +24,25 @@ export type ReykjanesState = {
  * fetched it is kept for the session: the underlying surveys are finished and
  * will not change.
  *
- * The "already requested" flag is a ref rather than state on purpose. Held in
- * state it would be a dependency of the effect that sets it, so the effect
- * would re-run, and its cleanup would abort the very request it had just
- * started — leaving the layer permanently empty with no error to show for it.
+ * The one-shot guard is a ref rather than state on purpose. Held in state it
+ * would be a dependency of the effect that sets it, so the effect would
+ * re-run, and its cleanup would abort the very request it had just started —
+ * leaving the layer permanently empty with no error to show for it.
+ *
+ * It records what has been **received**, not what has been started, which is
+ * the same failure one step removed: React mounts effects twice under Strict
+ * Mode, the first attempt is aborted by its own cleanup, and a flag set up
+ * front makes the second attempt decline to run.
  */
 export function useReykjanesLayer(enabled: boolean): ReykjanesState {
   const [state, setState] = useState<{ layer: ReykjanesLayer | null; unavailable: boolean }>({
     layer: null,
     unavailable: false,
   });
-  const requested = useRef(false);
+  const received = useRef(false);
 
   useEffect(() => {
-    if (!enabled || requested.current) return;
-    requested.current = true;
+    if (!enabled || received.current) return;
 
     const controller = new AbortController();
 
@@ -50,6 +54,8 @@ export function useReykjanesLayer(enabled: boolean): ReykjanesState {
         });
         const body = (await response.json()) as ReykjanesResult;
         if (controller.signal.aborted) return;
+        // A failure leaves this false, so toggling the layer again retries.
+        received.current = body.ok;
         setState(
           body.ok
             ? { layer: body.layer, unavailable: false }
@@ -59,8 +65,6 @@ export function useReykjanesLayer(enabled: boolean): ReykjanesState {
         if (!controller.signal.aborted) {
           setState({ layer: null, unavailable: true });
         }
-        // Allow a retry if the user toggles the layer again.
-        requested.current = false;
       }
     })();
 

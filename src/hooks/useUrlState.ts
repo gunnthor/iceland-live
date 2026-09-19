@@ -21,10 +21,13 @@ export type UrlState = {
   showDeformation: boolean;
   showWebcams: boolean;
   showEnvironment: boolean;
+  showDispersion: boolean;
   /** Vegagerðin station number of the camera being watched, if any. */
   webcamId: number | null;
   /** Id of the interferogram laid over the map, if any. */
   insarId: string | null;
+  /** Run UUID of the dispersal simulation laid over the map, if any. */
+  dispersionRunId: string | null;
 };
 
 export type UrlStateActions = {
@@ -35,8 +38,10 @@ export type UrlStateActions = {
   setShowDeformation: (show: boolean) => void;
   setShowWebcams: (show: boolean) => void;
   setShowEnvironment: (show: boolean) => void;
+  setShowDispersion: (show: boolean) => void;
   setWebcamId: (id: number | null) => void;
   setInsarId: (id: string | null) => void;
+  setDispersionRunId: (id: string | null) => void;
 };
 
 export function readUrlState(params: URLSearchParams): UrlState {
@@ -48,6 +53,7 @@ export function readUrlState(params: URLSearchParams): UrlState {
     showDeformation: params.get("deformation") === "1",
     showWebcams: params.get("cams") === "1",
     showEnvironment: params.get("air") === "1",
+    showDispersion: params.get("plume") === "1",
     webcamId: (() => {
       const raw = params.get("cam");
       if (!raw) return null;
@@ -55,6 +61,17 @@ export function readUrlState(params: URLSearchParams): UrlState {
       return Number.isInteger(parsed) ? parsed : null;
     })(),
     insarId: params.get("insar"),
+    /*
+     * Validated on the way in, not just on the way out. It reaches an upstream
+     * request path, and a link is something anyone can hand you.
+     */
+    dispersionRunId: (() => {
+      const raw = params.get("run");
+      if (!raw) return null;
+      return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw)
+        ? raw.toLowerCase()
+        : null;
+    })(),
   };
 }
 
@@ -138,6 +155,18 @@ export function useUrlState(): UrlState & UrlStateActions {
         }),
       [update],
     ),
+    setShowDispersion: useCallback(
+      (show) =>
+        update((params) => {
+          if (show) params.set("plume", "1");
+          else {
+            params.delete("plume");
+            // The overlay belongs to the layer; switching it off clears it.
+            params.delete("run");
+          }
+        }),
+      [update],
+    ),
     setWebcamId: useCallback(
       (id) =>
         update((params) => {
@@ -159,6 +188,18 @@ export function useUrlState(): UrlState & UrlStateActions {
             params.set("deformation", "1");
           } else {
             params.delete("insar");
+          }
+        }),
+      [update],
+    ),
+    setDispersionRunId: useCallback(
+      (id) =>
+        update((params) => {
+          if (id) {
+            params.set("run", id);
+            params.set("plume", "1");
+          } else {
+            params.delete("run");
           }
         }),
       [update],

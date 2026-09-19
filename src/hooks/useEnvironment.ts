@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { EnvironmentResult } from "@/domain/api";
 import type { AirQualityStation } from "@/domain/air-quality";
 import type { RoadCondition, RoadWeatherStation } from "@/domain/roads";
@@ -42,11 +42,9 @@ const POLL_INTERVAL_MS = 5 * 60_000;
  */
 export function useEnvironment(enabled: boolean): EnvironmentState {
   const [state, setState] = useState(EMPTY);
-  const requested = useRef(false);
 
   useEffect(() => {
     if (!enabled) return;
-    requested.current = true;
 
     const controller = new AbortController();
 

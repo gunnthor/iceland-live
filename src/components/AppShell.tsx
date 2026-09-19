@@ -3,10 +3,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ActivityObservation } from "@/analytics/clusters";
 import { Timeline } from "@/components/charts/Timeline";
+import { AirTrace, type TraceChoice } from "@/components/charts/AirTrace";
 import { MapView, type MapPadding, type MapViewHandle } from "@/components/map/MapView";
 import { ActivityFeed, type FeedSort } from "@/components/ui/ActivityFeed";
 import { AlertsPanel } from "@/components/ui/AlertsPanel";
 import { DeformationPanel } from "@/components/ui/DeformationPanel";
+import { DispersionPanel, initialFrame } from "@/components/ui/DispersionPanel";
 import { RegionList } from "@/components/ui/RegionList";
 import { WebcamPanel } from "@/components/ui/WebcamPanel";
 import { WebcamViewer } from "@/components/ui/WebcamViewer";
@@ -24,6 +26,14 @@ import type { EarthquakesResponse, VolcanoesResult } from "@/domain/api";
 import type { VolcanicSystem } from "@/domain/volcano";
 import type { OfficialAlert } from "@/domain/alert";
 import type { Interferogram } from "@/domain/deformation";
+import {
+  defaultLayer,
+  frameTimes,
+  hasKnownSource,
+  rasterUrl,
+  type DispersionLayer,
+  type DispersionRun,
+} from "@/domain/dispersion";
 import type { RegionTally } from "@/analytics/stats";
 import type { WebcamSite } from "@/domain/webcam";
 import { useEarthquakeData } from "@/hooks/useEarthquakeData";
@@ -33,12 +43,14 @@ import { useReykjanesLayer } from "@/hooks/useReykjanesLayer";
 import { useDeformation } from "@/hooks/useDeformation";
 import { useWebcams } from "@/hooks/useWebcams";
 import { useEnvironment } from "@/hooks/useEnvironment";
+import { useDispersion } from "@/hooks/useDispersion";
 import { lavaFlowsByRecency } from "@/domain/reykjanes";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { useNow } from "@/hooks/useNow";
 import { useUrlState } from "@/hooks/useUrlState";
 import { DEFAULT_FOCUS, padBounds, type BoundingBox, type MapFocus } from "@/lib/geo";
 import { TIME_RANGE_IDS, type TimeRangeId } from "@/domain/time-range";
+import { cn } from "@/lib/format";
 
 const DESKTOP_QUERY = "(min-width: 1024px)";
 const PANEL_WIDTH = 372;
@@ -71,8 +83,10 @@ export function AppShell({
     showDeformation,
     showWebcams,
     showEnvironment,
+    showDispersion,
     webcamId,
     insarId,
+    dispersionRunId,
     setRange,
     setEventId,
     setShowVolcanoes,
@@ -80,8 +94,10 @@ export function AppShell({
     setShowDeformation,
     setShowWebcams,
     setShowEnvironment,
+    setShowDispersion,
     setWebcamId,
     setInsarId,
+    setDispersionRunId,
   } = useUrlState();
   const isDesktop = useMediaQuery(DESKTOP_QUERY, true);
   const nowMs = useNow(serverNowMs);
@@ -95,6 +111,12 @@ export function AppShell({
   const { detail, loading: detailLoading } = useEarthquakeDetail(eventId);
 
   const [sort, setSort] = useState<FeedSort>("newest");
+  /*
+   * Which air series is drawn under the timeline. Component state, not URL:
+   * it is a way of looking at the window rather than part of the window, and
+   * the panel keeps a sensible default when it is unset.
+   */
+  const [airTrace, setAirTrace] = useState<TraceChoice | null>(null);
   const [sheetSnap, setSheetSnap] = useState<SheetSnap>("peek");
   const [volcanoes, setVolcanoes] = useState<VolcanicSystem[] | null>(null);
   const [volcanoError, setVolcanoError] = useState(false);
@@ -104,6 +126,7 @@ export function AppShell({
   const deformation = useDeformation(showDeformation);
   const webcams = useWebcams(showWebcams);
   const environment = useEnvironment(showEnvironment);
+  const dispersion = useDispersion(showDispersion);
 
   /**
    * Where the current activity is centred, used to order the camera list.
@@ -119,6 +142,58 @@ export function AppShell({
     () => webcams.sites.find((site) => site.id === webcamId) ?? null,
     [webcams.sites, webcamId],
   );
+
+  /** The dispersal run named in the URL, once the catalogue has loaded. */
+  const selectedRun = useMemo(
+    () => dispersion.runs.find((run) => run.id === dispersionRunId) ?? null,
+    [dispersion.runs, dispersionRunId],
+  );
+
+  /*
+   * Which layer of the run is drawn, and at which hour.
+   *
+   * Tagged with the run it belongs to and reconciled during render rather than
+   * reset by an effect, the same way `useEarthquakeDetail` handles its own
+   * switch: an hour index means a different instant in a different run, and a
+   * frame from the previous scenario must never survive even one paint.
+   */
+  const [plumeView, setPlumeView] = useState<{
+    runId: string;
+    layer: DispersionLayer;
+    frame: number;
+  } | null>(null);
+
+  /*
+   * `nowMs` ticks every second, and the opening frame is "the hour nearest
+   * now", so it is quantised to the hour before being used. Otherwise this
+   * recomputes every tick, and an untouched view would twitch between frames
+   * around each hour boundary.
+   */
+  const nowHour = Math.floor(nowMs / 3_600_000);
+  const plumeState = useMemo(() => {
+    if (!selectedRun) return null;
+    if (plumeView && plumeView.runId === selectedRun.id) return plumeView;
+
+    const layer = defaultLayer(selectedRun);
+    if (!layer) return null;
+    return {
+      runId: selectedRun.id,
+      layer,
+      frame: initialFrame(frameTimes(selectedRun), nowHour * 3_600_000),
+    };
+  }, [selectedRun, plumeView, nowHour]);
+
+  /** The frame currently laid over the map. */
+  const plumeOverlay = useMemo(() => {
+    if (!selectedRun || !plumeState) return null;
+    const frames = frameTimes(selectedRun);
+    const at = frames[Math.min(plumeState.frame, frames.length - 1)];
+    if (at === undefined) return null;
+    return {
+      imageUrl: rasterUrl(selectedRun, plumeState.layer, at),
+      bounds: selectedRun.bounds,
+    };
+  }, [selectedRun, plumeState]);
 
   /** The interferogram named in the URL, once the catalogue has loaded. */
   const selectedInsar = useMemo(
@@ -153,6 +228,19 @@ export function AppShell({
     () => (eventId ? (quakes.find((quake) => quake.id === eventId) ?? null) : null),
     [quakes, eventId],
   );
+
+  /*
+   * Whether the map is currently showing something the panels cannot be
+   * translucent over.
+   *
+   * The panel treatment is a single translucent layer, which is right above a
+   * dark basemap and faint markers. A dispersal raster is neither: it is IMO's
+   * own saturated scale, and `backdrop-filter: saturate(140%)` amplifies
+   * whatever is behind the glass, so the timeline's bars end up competing with
+   * a rainbow. When one is on the map the panels take the near-opaque
+   * treatment the bottom sheet already uses for the same reason.
+   */
+  const overlayIsVivid = plumeOverlay !== null;
 
   const padding = mapPadding(isDesktop, sheetSnap);
 
@@ -278,6 +366,49 @@ export function AppShell({
       }
     },
     [insarId, setInsarId, isDesktop],
+  );
+
+  /**
+   * Lays a dispersal run over the map.
+   *
+   * The model grid covers most of the North Atlantic, so framing it would zoom
+   * out past the point of the picture. The camera goes to the modelled source
+   * instead, wide enough to see where a plume of this size would travel.
+   */
+  const selectDispersionRun = useCallback(
+    (run: DispersionRun) => {
+      const alreadyShown = run.id === dispersionRunId;
+      setDispersionRunId(alreadyShown ? null : run.id);
+      if (alreadyShown) return;
+
+      // Defaults for the new run are derived; clearing is what asks for them.
+      setPlumeView(null);
+      if (hasKnownSource(run)) mapRef.current?.flyToPoint(run.longitude, run.latitude, 5.4);
+      if (!isDesktop) setSheetSnap("peek");
+    },
+    [dispersionRunId, setDispersionRunId, isDesktop],
+  );
+
+  const setPlumeLayer = useCallback(
+    (layer: DispersionLayer) => {
+      setPlumeView((current) =>
+        current === null && plumeState === null
+          ? null
+          : { ...(current ?? plumeState!), layer },
+      );
+    },
+    [plumeState],
+  );
+
+  const setPlumeFrame = useCallback(
+    (frame: number) => {
+      setPlumeView((current) =>
+        current === null && plumeState === null
+          ? null
+          : { ...(current ?? plumeState!), frame },
+      );
+    },
+    [plumeState],
   );
 
   /** Opens a camera and centres on it. Used by the list. */
@@ -428,6 +559,21 @@ export function AppShell({
           unavailable={deformation.unavailable}
         />
       )}
+      {showDispersion && (
+        <DispersionPanel
+          runs={dispersion.runs}
+          selectedId={dispersionRunId}
+          layer={plumeState?.layer ?? null}
+          onSelectRun={selectDispersionRun}
+          onLayerChange={setPlumeLayer}
+          frameIndex={plumeState?.frame ?? 0}
+          onFrameChange={setPlumeFrame}
+          onClear={() => setDispersionRunId(null)}
+          nowMs={nowMs}
+          loading={dispersion.loading}
+          unavailable={dispersion.unavailable}
+        />
+      )}
       {showEnvironment && (
         <EnvironmentPanel
           air={environment.air}
@@ -509,6 +655,16 @@ export function AppShell({
             ? { imageUrl: selectedInsar.imageUrl, bounds: selectedInsar.bounds }
             : null
         }
+        plume={plumeOverlay}
+        plumeSource={
+          selectedRun && hasKnownSource(selectedRun)
+            ? {
+                latitude: selectedRun.latitude,
+                longitude: selectedRun.longitude,
+                label: selectedRun.volcano,
+              }
+            : null
+        }
         webcams={webcams.sites}
         showWebcams={showWebcams}
         airStations={environment.air}
@@ -524,7 +680,10 @@ export function AppShell({
       {/* ---- Top bar ---- */}
       <header
         ref={headerRef}
-        className="panel absolute inset-x-0 top-0 z-20 border-x-0 border-t-0 lg:inset-x-3 lg:top-3 lg:rounded-lg lg:border"
+        className={cn(
+          "panel absolute inset-x-0 top-0 z-20 border-x-0 border-t-0 lg:inset-x-3 lg:top-3 lg:rounded-lg lg:border",
+          overlayIsVivid && "panel-solid",
+        )}
       >
         <div className="flex items-center gap-4 px-4 py-2.5 lg:px-5 lg:py-3">
           <Brand className="hidden sm:flex" />
@@ -570,7 +729,10 @@ export function AppShell({
       {/* ---- Desktop rail ---- */}
       {isDesktop && (
         <aside
-          className="panel absolute bottom-3 left-3 z-20 flex flex-col overflow-hidden rounded-lg"
+          className={cn(
+            "panel absolute bottom-3 left-3 z-20 flex flex-col overflow-hidden rounded-lg",
+            overlayIsVivid && "panel-solid",
+          )}
           style={{ width: PANEL_WIDTH, top: headerHeight + 24 }}
           aria-label="Earthquake activity"
         >
@@ -597,6 +759,10 @@ export function AppShell({
           onToggleDeformation={setShowDeformation}
           deformationAvailable={!deformation.unavailable}
           deformationLoading={deformation.loading}
+          showDispersion={showDispersion}
+          onToggleDispersion={setShowDispersion}
+          dispersionAvailable={!dispersion.unavailable}
+          dispersionLoading={dispersion.loading}
           showWebcams={showWebcams}
           onToggleWebcams={setShowWebcams}
           webcamsAvailable={!webcams.unavailable}
@@ -612,7 +778,10 @@ export function AppShell({
       {/* ---- Timeline ---- */}
       {isDesktop && data && (
         <div
-          className="panel absolute bottom-3 z-20 rounded-lg px-4 py-3"
+          className={cn(
+            "panel absolute bottom-3 z-20 rounded-lg px-4 py-3",
+            overlayIsVivid && "panel-solid",
+          )}
           style={{ left: PANEL_WIDTH + 24, right: 12 }}
         >
           <Timeline
@@ -622,6 +791,16 @@ export function AppShell({
             selectedId={eventId}
             onSelect={focusEvent}
           />
+          {showEnvironment && environment.air.length > 0 && (
+            <AirTrace
+              stations={environment.air}
+              fromMs={data.histogram.fromMs}
+              toMs={data.histogram.toMs}
+              selected={airTrace}
+              onSelect={setAirTrace}
+              className="mt-2 border-t border-[var(--color-line)] pt-2"
+            />
+          )}
         </div>
       )}
 
@@ -638,6 +817,16 @@ export function AppShell({
                 selectedId={eventId}
                 onSelect={focusEvent}
               />
+              {showEnvironment && environment.air.length > 0 && (
+                <AirTrace
+                  stations={environment.air}
+                  fromMs={data.histogram.fromMs}
+                  toMs={data.histogram.toMs}
+                  selected={airTrace}
+                  onSelect={setAirTrace}
+                  className="mt-2 border-t border-[var(--color-line)] pt-2"
+                />
+              )}
             </div>
           )}
           {panelBody}

@@ -174,6 +174,10 @@ export function MapControls({
   onToggleEnvironment,
   environmentAvailable,
   environmentLoading,
+  showDispersion,
+  onToggleDispersion,
+  dispersionAvailable,
+  dispersionLoading,
   latestEruption,
   className,
 }: {
@@ -197,6 +201,10 @@ export function MapControls({
   onToggleEnvironment: (show: boolean) => void;
   environmentAvailable: boolean;
   environmentLoading: boolean;
+  showDispersion: boolean;
+  onToggleDispersion: (show: boolean) => void;
+  dispersionAvailable: boolean;
+  dispersionLoading: boolean;
   /** Newest mapped lava flow, shown in the Reykjanes legend. */
   latestEruption: LavaFlowProperties | null;
   className?: string;
@@ -285,6 +293,19 @@ export function MapControls({
             environmentAvailable
               ? "SO2, H2S and particulates from the Environment and Energy Agency, plus road weather and conditions from Vegagerdin"
               : "Air and road information is not available right now"
+          }
+        />
+        <LayerToggle
+          label="Dispersal runs"
+          checked={showDispersion}
+          onChange={onToggleDispersion}
+          available={dispersionAvailable}
+          loading={dispersionLoading}
+          dotColour="#d09a6a"
+          title={
+            dispersionAvailable
+              ? "IMO's dispersal simulations. These model eruptions that are not happening, run daily so the answer is ready if one starts \u2014 not a forecast that one will."
+              : "Dispersal simulations are not available right now"
           }
         />
         <LayerToggle
