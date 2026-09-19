@@ -93,6 +93,12 @@ export const MAP_FOCUSES: readonly MapFocus[] = [
     description: "Reykjanes peninsula and ridge",
     bounds: { west: -23.2, south: 63.72, east: -21.2, north: 64.16 },
   },
+  {
+    id: "grindavik",
+    label: "Grindavík",
+    description: "Grindavík, Svartsengi and the Sundhnúkur crater row",
+    bounds: { west: -22.52, south: 63.81, east: -22.25, north: 63.93 },
+  },
 ];
 
 export const DEFAULT_FOCUS = MAP_FOCUSES[0] as MapFocus;

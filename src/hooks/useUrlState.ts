@@ -17,12 +17,14 @@ export type UrlState = {
   /** IMO event id of the selected earthquake. */
   eventId: string | null;
   showVolcanoes: boolean;
+  showReykjanes: boolean;
 };
 
 export type UrlStateActions = {
   setRange: (range: TimeRangeId) => void;
   setEventId: (eventId: string | null) => void;
   setShowVolcanoes: (show: boolean) => void;
+  setShowReykjanes: (show: boolean) => void;
 };
 
 export function readUrlState(params: URLSearchParams): UrlState {
@@ -30,6 +32,7 @@ export function readUrlState(params: URLSearchParams): UrlState {
     range: parseTimeRange(params.get("range")),
     eventId: params.get("event"),
     showVolcanoes: params.get("volcanoes") === "1",
+    showReykjanes: params.get("reykjanes") === "1",
   };
 }
 
@@ -74,6 +77,14 @@ export function useUrlState(): UrlState & UrlStateActions {
         update((params) => {
           if (show) params.set("volcanoes", "1");
           else params.delete("volcanoes");
+        }),
+      [update],
+    ),
+    setShowReykjanes: useCallback(
+      (show) =>
+        update((params) => {
+          if (show) params.set("reykjanes", "1");
+          else params.delete("reykjanes");
         }),
       [update],
     ),

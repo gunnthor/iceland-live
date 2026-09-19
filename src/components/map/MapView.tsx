@@ -9,6 +9,7 @@ import type {
   MapMouseEvent,
 } from "maplibre-gl";
 import type { Earthquake } from "@/domain/earthquake";
+import type { ReykjanesLayer } from "@/domain/reykjanes";
 import type { VolcanicSystem } from "@/domain/volcano";
 import type { BoundingBox } from "@/lib/geo";
 import { DEFAULT_FOCUS } from "@/lib/geo";
@@ -39,6 +40,26 @@ const VOLCANO_STATUS_LAYER = "volcano-status";
 const ALERT_AREA_SOURCE = "alert-area";
 const ALERT_AREA_FILL_LAYER = "alert-area-fill";
 const ALERT_AREA_LINE_LAYER = "alert-area-line";
+const LAVA_SOURCE = "reykjanes-lava";
+const BARRIER_SOURCE = "reykjanes-barriers";
+const GRABEN_SOURCE = "reykjanes-graben";
+const FACILITY_SOURCE = "reykjanes-facilities";
+const LAVA_FILL_LAYER = "reykjanes-lava-fill";
+const LAVA_LINE_LAYER = "reykjanes-lava-line";
+const GRABEN_LAYER = "reykjanes-graben-line";
+const BARRIER_LAYER = "reykjanes-barrier-line";
+const FACILITY_LAYER = "reykjanes-facility";
+const FACILITY_LABEL_LAYER = "reykjanes-facility-label";
+
+/** Every layer belonging to the Reykjanes detail set, toggled together. */
+const REYKJANES_LAYERS = [
+  LAVA_FILL_LAYER,
+  LAVA_LINE_LAYER,
+  GRABEN_LAYER,
+  BARRIER_LAYER,
+  FACILITY_LAYER,
+  FACILITY_LABEL_LAYER,
+];
 
 /** Attribution shown in the map corner. Every source we draw is credited. */
 const ATTRIBUTION = [
@@ -66,6 +87,8 @@ type MapData = {
   volcanoes: readonly VolcanicSystem[] | null;
   showVolcanoes: boolean;
   alertArea: GeoJSON.FeatureCollection | null;
+  reykjanes: ReykjanesLayer | null;
+  showReykjanes: boolean;
 };
 
 /**
@@ -94,6 +117,18 @@ function applyAll(map: MapLibreMap, data: MapData): void {
   geoJsonSource(map, ALERT_AREA_SOURCE)?.setData(
     data.alertArea ?? { type: "FeatureCollection", features: [] },
   );
+
+  if (data.reykjanes) {
+    geoJsonSource(map, LAVA_SOURCE)?.setData(data.reykjanes.lava);
+    geoJsonSource(map, BARRIER_SOURCE)?.setData(data.reykjanes.barriers);
+    geoJsonSource(map, GRABEN_SOURCE)?.setData(data.reykjanes.graben);
+    geoJsonSource(map, FACILITY_SOURCE)?.setData(data.reykjanes.facilities);
+  }
+
+  const reykjanesVisibility = data.showReykjanes ? "visible" : "none";
+  for (const layerId of REYKJANES_LAYERS) {
+    if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", reykjanesVisibility);
+  }
 }
 
 export type MapViewProps = {
@@ -106,6 +141,9 @@ export type MapViewProps = {
   showVolcanoes: boolean;
   /** Area of the official warning being shown, or null. */
   alertArea: GeoJSON.FeatureCollection | null;
+  /** Reykjanes detail layers, once loaded. */
+  reykjanes: ReykjanesLayer | null;
+  showReykjanes: boolean;
   /** Space reserved for the surrounding panels, so framing stays visible. */
   padding: MapPadding;
   onReady?: () => void;
@@ -132,6 +170,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     volcanoes,
     showVolcanoes,
     alertArea,
+    reykjanes,
+    showReykjanes,
     padding,
     onReady,
   },
@@ -160,8 +200,19 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     volcanoes,
     showVolcanoes,
     alertArea,
+    reykjanes,
+    showReykjanes,
   });
-  latestRef.current = { quakes, referenceMs, selectedId, volcanoes, showVolcanoes, alertArea };
+  latestRef.current = {
+    quakes,
+    referenceMs,
+    selectedId,
+    volcanoes,
+    showVolcanoes,
+    alertArea,
+    reykjanes,
+    showReykjanes,
+  };
 
   useImperativeHandle(
     ref,
@@ -302,6 +353,9 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       type: "geojson",
       data: { type: "FeatureCollection", features: [] },
     });
+    for (const id of [LAVA_SOURCE, BARRIER_SOURCE, GRABEN_SOURCE, FACILITY_SOURCE]) {
+      map.addSource(id, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+    }
 
     // Volcanic line work sits beneath the events: it is context, not content.
     map.addLayer(
@@ -352,6 +406,87 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       beforeId,
     );
 
+    /*
+     * Reykjanes detail, drawn beneath the events.
+     *
+     * Lava is ground, not data: it is shaded by how recently it erupted, dark
+     * enough to read as terrain rather than as something to click. The
+     * barriers are the exception — they are engineered structures built to
+     * protect Grindavík and Svartsengi, so they get the one bright line in
+     * the set.
+     */
+    map.addLayer(
+      {
+        id: LAVA_FILL_LAYER,
+        type: "fill",
+        source: LAVA_SOURCE,
+        layout: { visibility: "none" },
+        paint: {
+          "fill-color": [
+            "interpolate",
+            ["linear"],
+            ["get", "recencyIndex"],
+            0, "#4a2418",
+            3, "#3a2018",
+            7, "#2c1c18",
+            11, "#231b1a",
+          ],
+          "fill-opacity": 0.85,
+        },
+      },
+      beforeId,
+    );
+    map.addLayer(
+      {
+        id: LAVA_LINE_LAYER,
+        type: "line",
+        source: LAVA_SOURCE,
+        layout: { visibility: "none" },
+        paint: {
+          "line-color": [
+            "interpolate",
+            ["linear"],
+            ["get", "recencyIndex"],
+            0, "#8a4a30",
+            5, "#5c3628",
+            11, "#3d2c26",
+          ],
+          "line-width": ["interpolate", ["linear"], ["zoom"], 8, 0.4, 12, 1],
+          "line-opacity": 0.9,
+        },
+      },
+      beforeId,
+    );
+    map.addLayer(
+      {
+        id: GRABEN_LAYER,
+        type: "line",
+        source: GRABEN_SOURCE,
+        layout: { visibility: "none" },
+        paint: {
+          "line-color": "#6f8296",
+          "line-width": ["interpolate", ["linear"], ["zoom"], 8, 0.8, 13, 1.8],
+          "line-opacity": 0.75,
+          "line-dasharray": [2, 2],
+        },
+      },
+      beforeId,
+    );
+    map.addLayer(
+      {
+        id: BARRIER_LAYER,
+        type: "line",
+        source: BARRIER_SOURCE,
+        layout: { visibility: "none", "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": "#d8dee8",
+          "line-width": ["interpolate", ["linear"], ["zoom"], 8, 1, 12, 2.6, 14, 4],
+          "line-opacity": 0.95,
+        },
+      },
+      beforeId,
+    );
+
     map.addLayer({ ...pulseLayer, source: QUAKE_SOURCE_ID }, beforeId);
     map.addLayer({ ...quakeLayer, source: QUAKE_SOURCE_ID }, beforeId);
     map.addLayer({ ...selectedLayer, source: QUAKE_SOURCE_ID }, beforeId);
@@ -383,6 +518,39 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
         "circle-opacity": ["case", [">", ["get", "aviationRank"], 0], 0.95, 0.5],
         "circle-stroke-width": 1,
         "circle-stroke-color": "#04070c",
+      },
+    });
+
+    map.addLayer({
+      id: FACILITY_LAYER,
+      type: "circle",
+      source: FACILITY_SOURCE,
+      layout: { visibility: "none" },
+      paint: {
+        "circle-radius": ["interpolate", ["linear"], ["zoom"], 8, 2.5, 12, 4.5],
+        "circle-color": "#8fa3bd",
+        "circle-stroke-width": 1.2,
+        "circle-stroke-color": "#04070c",
+      },
+    });
+
+    map.addLayer({
+      id: FACILITY_LABEL_LAYER,
+      type: "symbol",
+      source: FACILITY_SOURCE,
+      layout: {
+        visibility: "none",
+        "text-field": ["get", "name"],
+        "text-font": ["Open Sans Regular"],
+        "text-size": ["interpolate", ["linear"], ["zoom"], 8, 10, 12, 12],
+        "text-offset": [0, 1],
+        "text-anchor": "top",
+        "text-padding": 6,
+      },
+      paint: {
+        "text-color": "#a9b8cc",
+        "text-halo-color": "#04070c",
+        "text-halo-width": 1.4,
       },
     });
 
@@ -477,6 +645,25 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       alertArea ?? { type: "FeatureCollection", features: [] },
     );
   }, [alertArea]);
+
+  // --- Reykjanes detail ---
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !loadedRef.current || !reykjanes) return;
+    geoJsonSource(map, LAVA_SOURCE)?.setData(reykjanes.lava);
+    geoJsonSource(map, BARRIER_SOURCE)?.setData(reykjanes.barriers);
+    geoJsonSource(map, GRABEN_SOURCE)?.setData(reykjanes.graben);
+    geoJsonSource(map, FACILITY_SOURCE)?.setData(reykjanes.facilities);
+  }, [reykjanes]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !loadedRef.current) return;
+    const visibility = showReykjanes ? "visible" : "none";
+    for (const layerId of REYKJANES_LAYERS) {
+      if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", visibility);
+    }
+  }, [showReykjanes, reykjanes]);
 
   // --- Pulse animation --------------------------------------------------------
   useEffect(() => {

@@ -13,6 +13,7 @@ import type { OfficialAlert } from "./alert";
 import type { Earthquake } from "./earthquake";
 import type { EarthquakeDetail } from "./earthquake-detail";
 import type { TimeRangeId } from "./time-range";
+import type { ReykjanesLayer } from "./reykjanes";
 import type { VolcanicSystem } from "./volcano";
 import type { ProviderMeta } from "@/providers/types";
 
@@ -82,3 +83,12 @@ export type VolcanoesResponse = {
 };
 
 export type VolcanoesResult = VolcanoesResponse | ApiErrorResponse;
+
+export type ReykjanesResponse = {
+  ok: true;
+  generatedAt: string;
+  layer: ReykjanesLayer;
+  meta: ProviderMeta;
+};
+
+export type ReykjanesResult = ReykjanesResponse | ApiErrorResponse;

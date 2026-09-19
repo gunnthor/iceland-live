@@ -7,9 +7,10 @@ The homepage *is* the application: you land on a dark map of Iceland with every
 earthquake IMO has recorded in your selected window, sized by magnitude and
 coloured by how recently it happened. No marketing page, no sign-up.
 
-**Phase 1 scope: doing earthquakes properly.** Volcanic systems are on the map as a
-toggleable layer with each system's official IMO aviation colour code. Everything
-else in the roadmap is deliberately not built yet.
+**Scope.** Earthquakes are the core and are done properly. On top of that sit three
+toggleable layers built on official data: volcanic systems with their IMO aviation
+colour codes, official CAP warnings, and Reykjanes detail (lava, barriers, graben).
+Everything else in the roadmap is deliberately not built yet.
 
 ---
 
@@ -43,6 +44,12 @@ else in the roadmap is deliberately not built yet.
   This is also the accessible route to everything the map shows.
 - **Event details** — magnitude and scale, region, exact time, elapsed time, depth,
   coordinates, review status, IMO event id, and when the solution was last revised.
+  Opening an event also fetches its full solution, adding the uncertainties on
+  magnitude, location, origin time and depth at IMO's stated confidence level.
+- **Official warnings** — the IMO warnings currently in force, relayed unaltered
+  from the CAP broker, in IMO's own colours and clearly separated from our
+  analytics. Geological warnings are tagged as such, and a warning's area can be
+  drawn on the map.
 - **Timeline** — event counts binned over the window, with bars coloured by the
   largest magnitude in each bin. Selecting a bar selects the largest event in it.
 - **"What's happening"** — a deterministic prose summary generated from the data.
@@ -52,8 +59,11 @@ else in the roadmap is deliberately not built yet.
 - **Volcanic systems layer** — central volcanoes, caldera rims and fissure swarms
   from the Catalogue of Icelandic Volcanoes, with each system's official IMO
   aviation colour code.
-- **Reykjanes quick-focus**, because it is active and near the capital.
-- **Shareable URLs** — `?range=7d&event=IMO2026smblhr&volcanoes=1`.
+- **Reykjanes detail layer** — lava from the twelve mapped eruptions of 2021–2025,
+  the lava barriers protecting Grindavík and Svartsengi, the Grindavík subsidence
+  graben as mapped from InSAR, and the peninsula's geothermal plants.
+- **Quick-focus viewpoints** for Iceland, Reykjanes and Grindavík.
+- **Shareable URLs** — `?range=7d&event=IMO2026smblhr&volcanoes=1&reykjanes=1`.
 
 ---
 
@@ -176,10 +186,94 @@ Other endpoints on this service, used or available:
 
 | Endpoint | Status |
 | --- | --- |
-| `GET /quakes/events` | **In use** |
-| `GET /quakes/events/{event_id}` | Available — richer detail with uncertainties and confidence levels. Not yet used; see roadmap. |
+| `GET /quakes/events` | **In use** — the bulk catalogue |
+| `GET /quakes/events/{event_id}` | **In use** — per-event solution with uncertainties, fetched on selection |
 | `GET /quakes/events/count` | Available |
 | `GET /quakes/regions` | Available — four collections of seismic region polygons |
+
+#### Per-event uncertainties, and the units problem
+
+`GET /quakes/events/{id}` mirrors SeisComP's origin and magnitude structure, and
+reports every number as a string. It has **no response schema in the OpenAPI
+spec and documents no units**, so the units were established by inspecting live
+data across the quality range:
+
+- `time.uncertainty` — seconds (observed 0.04–0.25).
+- `depth.uncertainty` — kilometres, matching the depth value itself.
+- `latitude`/`longitude.uncertainty` — **kilometres, not degrees.** Observed
+  values run 0.2–3.8. Read as degrees those would be horizontal errors of
+  22–420 km, which is not a solution IMO would publish as reviewed.
+- `confidenceLevel` — percent, arriving as `89.99999761581421` for 90%.
+
+The field that matters most is `depthType`. When the recorded phases cannot
+constrain depth, IMO fixes it — usually at 10 km — and marks the solution
+`depthType: "operator assigned"` with an uncertainty of exactly `0`. Rendered
+naively that reads as "10.0 ± 0.0 km", i.e. perfectly known, which is precisely
+backwards. Those solutions are shown as "10.0 km (fixed)" with an explanation,
+and `isFixedDepth()` guards every place depth meets an error bar.
+
+### Official warnings — CAP API (pinned `2026-04-14`)
+
+```
+GET https://api.vedur.is/cap/capbroker/active/category/all
+GET https://api.vedur.is/cap/capbroker/sender/{sender}/identifier/{id}/sent/{sent}/json
+```
+
+IMO's broker for OASIS CAP 1.2 messages. We list the active identifiers and then
+fetch each message, rather than using the flatter `/active/detailed/all`: the
+two-step route returns canonical CAP, a published standard, and it is the shape
+we could verify against real messages.
+
+Three things this integration has to get right:
+
+- **The payload is XML converted to JSON**, which collapses single-element
+  sequences into bare objects. `info` is an array when IMO publishes both
+  languages and an object when it publishes one; the same goes for `area`,
+  `parameter` and `eventCode`. All are read through `asArray`.
+- **CAP polygons are `latitude,longitude`**, the opposite of GeoJSON. Read the
+  wrong way round an Icelandic warning lands in the Indian Ocean.
+- **Only `status: "Actual"` is shown.** CAP also carries `Test`, `Exercise`,
+  `Draft` and `System`. Presenting a drill as a live warning is the worst thing
+  this product could do, so the filter lives in the normalizer, once.
+
+No warnings in force is the normal state: the broker answers `204 No Content`,
+which resolves to an empty list and renders nothing. "None in force" and "we
+could not ask" are tracked separately.
+
+### Reykjanes detail — GeoServer WFS
+
+Four datasets, discovered through the gateway's own index (`GET /gis/layers`)
+rather than guessed, and fetched as GeoJSON in EPSG:4326:
+
+| Layer | Source | Endpoint |
+| --- | --- | --- |
+| Lava flows, 2021–2025 | Náttúrufræðistofnun Íslands / Landmælingar Íslands | `gis.natt.is` — `LMI_vektor:goslok_reykjaneselda` |
+| Lava barriers | Icelandic Meteorological Office | `geo.vedur.is` — `infrastructure:Svartsengi_Grindavik_lava_Barriers` |
+| Grindavík graben | Landmælingar Íslands (InSAR, Nov 2023) | `gis.lmi.is` — `…graben_formation_graben_outline` |
+| Geothermal plants | Orkustofnun | `gis.lmi.is` — `orkustofnun:gisvirkjun` |
+
+The lava layer carries each eruption's working name, start and end dates, mapped
+area and erupted volume — twelve eruptions from Geldingadalir (March 2021) to
+Sundhnúksgígar IX (July 2025).
+
+It also arrives as **5.5 MB of GeoJSON**, mapped at roughly one vertex every ten
+metres, with one outline alone holding 226,776 points. At the zooms where lava is
+visible that detail is well below a pixel, so it is simplified server-side
+(Ramer–Douglas–Peucker, 20 m tolerance) to about 2% of the original — the whole
+Reykjanes payload is then ~118 KB. The implementation is iterative rather than
+recursive because the recursive form overflows the stack on that largest ring.
+
+The four fetches run concurrently and each may fail on its own: one GeoServer
+being down costs that layer, not the whole view, and the legend credits only the
+datasets that actually arrived.
+
+**On reference points.** No coordinates are hand-typed. Svartsengi and
+Reykjanesvirkjun come from Orkustofnun's register, filtered by bounding box
+rather than by name. Grindavík and the Blue Lagoon are left to the basemap,
+which already labels them — an invented coordinate sitting beside surveyed data
+would be indistinguishable from it. The quick-focus viewpoints are camera
+framing, which is a hint about where to look, not a claim about where something
+is.
 
 ### Volcanic systems — Volcanoes API (pinned `2026-06-04`)
 
@@ -204,10 +298,11 @@ assessments and are shown as such.
 - **EPOS API** (`/epos`, 29 endpoints) — webcams, plume height, ground-based radar
   and DOAS, InSAR interferograms, shakemaps, GNSS stations and RINEX, SO₂ and tephra
   hazard maps, ash/gas dispersion forecasts, eruption catalogue and imagery.
-- **CAP API** (`/cap`) — official Common Alerting Protocol warnings, including
-  Meteoalarm. This is the correct source for official alerts if we ever show them.
-- **GIS API** (`/gis/layers`) — WMS/WFS layers including Grindavík and Svartsengi
-  lava barriers, eruption lava extents, glacier outlines, and SIL station locations.
+- **CAP API** — Meteoalarm feeds and the historical archive
+  (`/capbroker/sent/from/…`). The active-warnings path is in use; these are not.
+- **GIS API** (`/gis/layers`) — 36 indexed layers. Four are in use for Reykjanes;
+  the rest include glacier outlines, SIL station locations, high-temperature
+  geothermal areas, South Iceland seismic fractures and Holocene eruptive fissures.
 - **Weather API** (`/weather`), **Dispersion**, **Glaciers**.
 - Non-IMO: air quality (Environment and Energy Agency), road conditions
   (Vegagerðin / Umferðin), road weather stations, webcams.
@@ -220,6 +315,9 @@ assessments and are shown as such.
 src/
 ├── domain/          Normalized types. No upstream shapes appear here.
 │   ├── earthquake.ts    Earthquake, EventType, ReviewStatus
+│   ├── earthquake-detail.ts   Measured values, isFixedDepth
+│   ├── alert.ts         OfficialAlert — IMO's assessment, never ours
+│   ├── reykjanes.ts     Lava flows, barriers, graben, facilities
 │   ├── volcano.ts       VolcanicSystem, AviationStatus, VolcanicAlertLevel
 │   ├── time-range.ts    The five windows, and how to resolve one to instants
 │   └── api.ts           The contract between our routes and the browser
@@ -227,13 +325,17 @@ src/
 ├── providers/       Everything that talks to the outside world.
 │   ├── types.ts         EarthquakeProvider, VolcanoProvider, ProviderResult, ProviderError
 │   ├── registry.ts      The one place that picks an implementation
-│   ├── imo/             client · normalize · quakes-provider · volcano-provider
+│   ├── imo/             client · quakes · detail · volcanoes · CAP warnings
+│   ├── gis/             WFS client · Reykjanes layers (lava, barriers, graben)
 │   └── fixtures/        Offline snapshot provider
 │
 ├── server/          Caching and the degraded-mode policy.
 │   ├── cache.ts         TTL cache that keeps serving after upstream failures
 │   ├── earthquakes.ts   One upstream window, sliced for every range
-│   └── volcanoes.ts
+│   ├── earthquake-detail.ts   Per-event solutions, bounded LRU
+│   ├── alerts.ts        Official warnings
+│   ├── volcanoes.ts
+│   └── reykjanes.ts
 │
 ├── analytics/       Pure functions over normalized data. Heavily tested.
 │   ├── stats.ts         counts, largest, deepest, latest, region tallies
@@ -243,7 +345,8 @@ src/
 │
 ├── app/             Next.js routes.
 │   ├── page.tsx         Server-renders the first payload
-│   └── api/             /api/earthquakes · /api/volcanoes
+│   └── api/             /api/earthquakes[/:id] · /api/alerts
+│                        /api/volcanoes · /api/reykjanes
 │
 ├── components/
 │   ├── map/             MapView, base-style tuning, layer specs, GeoJSON builders
@@ -251,8 +354,9 @@ src/
 │   ├── ui/              Panels, feed, detail, controls, states
 │   └── AppShell.tsx     Orchestration and layout
 │
-├── hooks/           useEarthquakeData · useUrlState · useNow · useMediaQuery
-└── lib/             time · format · geo
+├── hooks/           useEarthquakeData · useEarthquakeDetail · useAlerts
+│                  useReykjanesLayer · useUrlState · useNow · useMediaQuery
+└── lib/             time · format · geo · simplify
 ```
 
 The dependency rule runs one way: `app` → `components` → `hooks` → `analytics` →
@@ -320,11 +424,21 @@ on screen instead of an empty map. Concurrent callers share one in-flight fetch.
 
 **3. HTTP cache headers — lets a CDN help.**
 
-| Route | Header |
-| --- | --- |
-| `/api/earthquakes` (healthy) | `public, s-maxage=60, stale-while-revalidate=300` |
-| `/api/earthquakes` (degraded) | `no-store` |
-| `/api/volcanoes` (healthy) | `public, s-maxage=3600, stale-while-revalidate=86400` |
+| Route | Header | In-process TTL / stale window |
+| --- | --- | --- |
+| `/api/earthquakes` | `s-maxage=60, swr=300` | 60s / 6h |
+| `/api/earthquakes/{id}` | `s-maxage=300, swr=1800` | 5min / 1h, 500-entry LRU |
+| `/api/alerts` | `s-maxage=180, swr=600` | 3min / 30min |
+| `/api/volcanoes` | `s-maxage=3600, swr=86400` | 1h / 24h |
+| `/api/reykjanes` | `s-maxage=86400, swr=604800` | 24h / 7d |
+| any of them, degraded | `no-store` | — |
+
+The stale windows are not uniform, and the differences are deliberate. Six hours
+of stale earthquakes is acceptable because an out-of-date map of past seismicity
+is still true. Thirty minutes is the limit for warnings, because a lapsed warning
+is not. Reykjanes geometry is kept for a week because those surveys are finished
+and will never change. Per-event detail is keyed by event id, which is unbounded,
+so that cache is size-capped as well as time-capped.
 
 Degraded responses are `no-store` so a CDN never pins an outage state in place after
 IMO recovers.
@@ -390,9 +504,14 @@ the code is written to make that hard to forget.
   numbers they came from and can show their own method. A test asserts that no
   generated string contains predictive or hazard language (`precursor`, `imminent`,
   `erupt`, `warning`, `evacuate`, …).
-- **Official status is IMO's, shown as IMO's.** The aviation colour codes are
-  rendered in their published colours with IMO's own wording and attribution,
-  visually distinct from our monochrome-and-amber analytics.
+- **Official status is IMO's, shown as IMO's.** Aviation colour codes and CAP
+  warnings are rendered in their published colours with IMO's own wording and
+  attribution, visually distinct from our monochrome-and-amber analytics. We
+  relay them; we never derive, adjust or summarise them. Drills and drafts
+  (`status` other than `Actual`) are refused outright.
+- **An absent error bar is not a zero one.** A fixed depth renders as "fixed"
+  with an explanation rather than as "± 0.0 km", and an unreported uncertainty
+  renders as nothing rather than as zero.
 - **We do not draw hazard zones.** The Catalogue publishes volcanic systems as line
   work, so we draw lines. A filled polygon reads as a zone with an inside and an
   outside — a claim this dataset does not make.
@@ -460,9 +579,17 @@ that is where upstream reality meets our assumptions.
   quarter to a third of events have been reviewed by a seismologist; the rest can
   move or vanish.
   The UI marks them `auto` and the summary says what share is reviewed.
-- **The detail endpoint is not used yet.** `GET /quakes/events/{id}` returns location
-  and magnitude uncertainties, confidence levels and `depthType`. We show only what
-  the bulk CSV carries, so no error bars appear anywhere.
+- **Uncertainty units are inferred, not documented.** The per-event endpoint has no
+  response schema and states no units. Kilometres for horizontal and depth error,
+  seconds for time, is the only reading consistent with live data across the
+  quality range — but it is an inference, and it is the first thing to re-check if
+  IMO publishes a schema.
+- **Warnings are relayed, not interpreted.** We show what is in force; we do not
+  model what it means for a given location, and a warning's polygon is IMO's
+  forecast region, not a precise hazard boundary.
+- **Reykjanes lava is historical.** Twelve mapped eruptions through July 2025. If
+  a new eruption began, its flow would not appear here until the surveying
+  agencies published an outline — this layer is a record, not a live feed.
 - **Depth is capped upstream.** The Quakes API constrains `depth_max` to 50 km. Any
   deeper event would be invisible to us. (Icelandic seismicity is overwhelmingly
   shallower than 30 km, so this is close to theoretical.)
@@ -484,19 +611,22 @@ that is where upstream reality meets our assumptions.
 
 **Next up**
 
-1. **Event detail from `/quakes/events/{id}`** — fetch on selection to show location
-   and depth uncertainty, confidence level and `depthType`. Turns "5.2 km" into
-   "5.2 ± 1.9 km" and is honest about how well-constrained an automatic solution is.
-2. **Official alerts from the CAP API** — real IMO and Civil Protection warnings,
-   clearly separated from our analytics. This is the single highest-value addition,
-   and the API is already documented and reachable.
-3. **Reykjanes detail mode** — Svartsengi, Sundhnúkur, Fagradalsfjall, Grindavík and
-   the Blue Lagoon as named reference points, plus the lava-barrier layers already
-   published through the GIS API.
+1. **GNSS deformation from EPOS** (`/gps/station`, `/gps/rinex`). Inflation at
+   Svartsengi is the signal that actually precedes the Sundhnúkur eruptions, and
+   it is the largest remaining gap between this site and what a reader watching
+   Reykjanes genuinely wants. Descriptive time series only.
+2. **Webcams and plume observations** (`/volcano/monitoring-data/webcam`,
+   `/plume-height`). During unrest a live camera is the single most-wanted thing
+   on a page like this, and it requires no interpretation from us at all.
+3. **Historical context for the observations.** We can say "46 earthquakes within
+   6 km over 26 hours"; we cannot yet say how that compares with the same area's
+   own baseline. Computing a per-region background rate from the catalogue would
+   turn a bare count into something a reader can actually judge — and it is the
+   honest version of the "how unusual is today" question.
 
 **Later**
 
-- *Volcano mode* — EPOS webcams, plume height, shakemaps, InSAR, GNSS deformation.
+- *Volcano mode* — EPOS shakemaps, InSAR interferograms, eruption imagery.
 - *Air* — SO₂, PM2.5, PM10, H₂S, NO₂ from the Environment and Energy Agency.
 - *Roads* — conditions, closures, road weather stations, webcams (Vegagerðin).
 - *Weather* — wind, precipitation, temperature, alerts.
@@ -518,6 +648,17 @@ published through IMO's Volcanoes API — a collaboration of IMO, the Institute 
 Earth Sciences at the University of Iceland, the Icelandic Institute of Natural
 History and Iceland GeoSurvey (ÍSOR). Individual features credit their originating
 institution in the data, and those strings are preserved and shown.
+
+**Official warnings**: [Icelandic Meteorological Office](https://en.vedur.is/weather/warnings/),
+via its CAP broker. Relayed unaltered.
+
+**Reykjanes layers**: lava outlines from
+[Náttúrufræðistofnun Íslands](https://www.ni.is/) and
+[Landmælingar Íslands](https://www.lmi.is/); lava barriers from the Icelandic
+Meteorological Office; Grindavík graben mapping from Landmælingar Íslands
+(InSAR, November 2023); geothermal plant locations from
+[Orkustofnun](https://orkustofnun.is/). Served through those agencies' public
+GeoServer instances, indexed by IMO's GIS API.
 
 **Basemap**: [CARTO](https://carto.com/attributions) · [OpenStreetMap contributors](https://www.openstreetmap.org/copyright)
 

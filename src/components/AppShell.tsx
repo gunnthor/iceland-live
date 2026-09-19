@@ -21,6 +21,8 @@ import type { OfficialAlert } from "@/domain/alert";
 import { useEarthquakeData } from "@/hooks/useEarthquakeData";
 import { useEarthquakeDetail } from "@/hooks/useEarthquakeDetail";
 import { useAlerts } from "@/hooks/useAlerts";
+import { useReykjanesLayer } from "@/hooks/useReykjanesLayer";
+import { lavaFlowsByRecency } from "@/domain/reykjanes";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { useNow } from "@/hooks/useNow";
 import { useUrlState } from "@/hooks/useUrlState";
@@ -50,7 +52,16 @@ export function AppShell({
   initialData: EarthquakesResponse | null;
   serverNowMs: number;
 }) {
-  const { range, eventId, showVolcanoes, setRange, setEventId, setShowVolcanoes } = useUrlState();
+  const {
+    range,
+    eventId,
+    showVolcanoes,
+    showReykjanes,
+    setRange,
+    setEventId,
+    setShowVolcanoes,
+    setShowReykjanes,
+  } = useUrlState();
   const isDesktop = useMediaQuery(DESKTOP_QUERY, true);
   const nowMs = useNow(serverNowMs);
 
@@ -68,6 +79,7 @@ export function AppShell({
   const [volcanoError, setVolcanoError] = useState(false);
 
   const { alerts, unavailable: alertsUnavailable } = useAlerts();
+  const reykjanes = useReykjanesLayer(showReykjanes);
   /** The one warning area currently drawn on the map, if any. */
   const [alertArea, setAlertArea] = useState<GeoJSON.FeatureCollection | null>(null);
 
@@ -98,6 +110,12 @@ export function AppShell({
   );
 
   const padding = mapPadding(isDesktop, sheetSnap);
+
+  /** The newest mapped lava flow, for the Reykjanes legend. */
+  const latestEruption = useMemo(
+    () => (reykjanes.layer ? (lavaFlowsByRecency(reykjanes.layer)[0]?.properties ?? null) : null),
+    [reykjanes.layer],
+  );
 
   /** The next range up, offered when the current window turns up nothing. */
   const widerRange: TimeRangeId | null =
@@ -329,6 +347,8 @@ export function AppShell({
         volcanoes={volcanoes}
         showVolcanoes={showVolcanoes && volcanoes !== null}
         alertArea={alertArea}
+        reykjanes={reykjanes.layer}
+        showReykjanes={showReykjanes && reykjanes.layer !== null}
         padding={padding}
       />
 
@@ -400,6 +420,11 @@ export function AppShell({
           showVolcanoes={showVolcanoes}
           onToggleVolcanoes={setShowVolcanoes}
           volcanoesAvailable={!volcanoError}
+          showReykjanes={showReykjanes}
+          onToggleReykjanes={setShowReykjanes}
+          reykjanesAvailable={!reykjanes.unavailable}
+          reykjanesLoading={reykjanes.loading}
+          latestEruption={latestEruption}
         />
       </div>
 
