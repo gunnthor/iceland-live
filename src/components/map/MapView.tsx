@@ -9,12 +9,19 @@ import type {
   MapMouseEvent,
 } from "maplibre-gl";
 import type { Earthquake } from "@/domain/earthquake";
+import type maplibregl from "maplibre-gl";
+import type { GnssStation } from "@/domain/deformation";
 import type { ReykjanesLayer } from "@/domain/reykjanes";
 import type { VolcanicSystem } from "@/domain/volcano";
 import type { BoundingBox } from "@/lib/geo";
 import { DEFAULT_FOCUS } from "@/lib/geo";
 import { BASE_STYLE_URL, firstSymbolLayerId, tuneBaseStyle } from "./base-style";
-import { toQuakeGeoJson, toVolcanoLineGeoJson, toVolcanoPointGeoJson } from "./geojson";
+import {
+  toGnssGeoJson,
+  toQuakeGeoJson,
+  toVolcanoLineGeoJson,
+  toVolcanoPointGeoJson,
+} from "./geojson";
 import {
   pulseLayer,
   quakeLayer,
@@ -25,6 +32,47 @@ import {
   QUAKE_SELECTED_LAYER_ID,
   QUAKE_SOURCE_ID,
 } from "./quake-layers";
+
+/**
+ * Places or removes the interferogram overlay.
+ *
+ * An `image` source must be created with a URL, so rather than keeping an empty
+ * one around it is added when a product is selected and removed when it is
+ * cleared. Corner order is the one MapLibre expects: top-left, top-right,
+ * bottom-right, bottom-left.
+ */
+function setInsarOverlay(map: MapLibreMap, insar: InsarOverlay | null, beforeId?: string): void {
+  if (!insar) {
+    if (map.getLayer(INSAR_LAYER)) map.removeLayer(INSAR_LAYER);
+    if (map.getSource(INSAR_SOURCE)) map.removeSource(INSAR_SOURCE);
+    return;
+  }
+
+  const { west, south, east, north } = insar.bounds;
+  const coordinates: [[number, number], [number, number], [number, number], [number, number]] = [
+    [west, north],
+    [east, north],
+    [east, south],
+    [west, south],
+  ];
+
+  const existing = map.getSource(INSAR_SOURCE);
+  if (existing && "updateImage" in existing) {
+    (existing as maplibregl.ImageSource).updateImage({ url: insar.imageUrl, coordinates });
+    return;
+  }
+
+  map.addSource(INSAR_SOURCE, { type: "image", url: insar.imageUrl, coordinates });
+  map.addLayer(
+    {
+      id: INSAR_LAYER,
+      type: "raster",
+      source: INSAR_SOURCE,
+      paint: { "raster-opacity": 0.78, "raster-fade-duration": 200 },
+    },
+    beforeId,
+  );
+}
 
 /** Narrows a style source to a GeoJSON source before writing data to it. */
 function geoJsonSource(map: MapLibreMap, id: string): GeoJSONSource | null {
@@ -50,6 +98,11 @@ const GRABEN_LAYER = "reykjanes-graben-line";
 const BARRIER_LAYER = "reykjanes-barrier-line";
 const FACILITY_LAYER = "reykjanes-facility";
 const FACILITY_LABEL_LAYER = "reykjanes-facility-label";
+const INSAR_SOURCE = "insar-image";
+const INSAR_LAYER = "insar-raster";
+const GNSS_SOURCE = "gnss-stations";
+const GNSS_LAYER = "gnss-station";
+const GNSS_LABEL_LAYER = "gnss-station-label";
 
 /** Every layer belonging to the Reykjanes detail set, toggled together. */
 const REYKJANES_LAYERS = [
@@ -71,6 +124,12 @@ const ATTRIBUTION = [
 
 export type MapPadding = { top: number; right: number; bottom: number; left: number };
 
+/** The interferogram currently laid over the map, if any. */
+export type InsarOverlay = {
+  imageUrl: string;
+  bounds: { west: number; south: number; east: number; north: number };
+};
+
 export type MapViewHandle = {
   /** Frames a bounding box, respecting the current panel padding. */
   fitBounds: (bounds: BoundingBox, options?: { maxZoom?: number }) => void;
@@ -89,6 +148,9 @@ type MapData = {
   alertArea: GeoJSON.FeatureCollection | null;
   reykjanes: ReykjanesLayer | null;
   showReykjanes: boolean;
+  stations: readonly GnssStation[];
+  showStations: boolean;
+  insar: InsarOverlay | null;
 };
 
 /**
@@ -129,6 +191,14 @@ function applyAll(map: MapLibreMap, data: MapData): void {
   for (const layerId of REYKJANES_LAYERS) {
     if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", reykjanesVisibility);
   }
+
+  geoJsonSource(map, GNSS_SOURCE)?.setData(toGnssGeoJson(data.stations));
+  const gnssVisibility = data.showStations ? "visible" : "none";
+  for (const layerId of [GNSS_LAYER, GNSS_LABEL_LAYER]) {
+    if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", gnssVisibility);
+  }
+
+  setInsarOverlay(map, data.insar, firstSymbolLayerId(map));
 }
 
 export type MapViewProps = {
@@ -144,6 +214,11 @@ export type MapViewProps = {
   /** Reykjanes detail layers, once loaded. */
   reykjanes: ReykjanesLayer | null;
   showReykjanes: boolean;
+  /** GNSS station network. Locations only; no displacements are published. */
+  stations: readonly GnssStation[];
+  showStations: boolean;
+  /** Interferogram overlay, or null when none is selected. */
+  insar: InsarOverlay | null;
   /** Space reserved for the surrounding panels, so framing stays visible. */
   padding: MapPadding;
   onReady?: () => void;
@@ -172,6 +247,9 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     alertArea,
     reykjanes,
     showReykjanes,
+    stations,
+    showStations,
+    insar,
     padding,
     onReady,
   },
@@ -202,6 +280,9 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     alertArea,
     reykjanes,
     showReykjanes,
+    stations,
+    showStations,
+    insar,
   });
   latestRef.current = {
     quakes,
@@ -212,6 +293,9 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     alertArea,
     reykjanes,
     showReykjanes,
+    stations,
+    showStations,
+    insar,
   };
 
   useImperativeHandle(
@@ -353,7 +437,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       type: "geojson",
       data: { type: "FeatureCollection", features: [] },
     });
-    for (const id of [LAVA_SOURCE, BARRIER_SOURCE, GRABEN_SOURCE, FACILITY_SOURCE]) {
+    for (const id of [LAVA_SOURCE, BARRIER_SOURCE, GRABEN_SOURCE, FACILITY_SOURCE, GNSS_SOURCE]) {
       map.addSource(id, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
     }
 
@@ -521,6 +605,50 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       },
     });
 
+    /*
+     * GNSS stations: instrument locations, not measurements.
+     *
+     * Drawn as small hollow squares so they never read as events. IMO does not
+     * publish processed displacements through this API, so there is nothing
+     * here to size or colour by — the layer answers "what is watching this
+     * area", and links out to IMO's own data.
+     */
+    map.addLayer({
+      id: GNSS_LAYER,
+      type: "circle",
+      source: GNSS_SOURCE,
+      layout: { visibility: "none" },
+      paint: {
+        "circle-radius": ["interpolate", ["linear"], ["zoom"], 5, 2.2, 10, 4],
+        "circle-color": "transparent",
+        "circle-stroke-width": 1.4,
+        "circle-stroke-color": ["case", ["get", "active"], "#7fd4c1", "#5a6672"],
+        "circle-stroke-opacity": 0.9,
+      },
+    });
+
+    map.addLayer({
+      id: GNSS_LABEL_LAYER,
+      type: "symbol",
+      source: GNSS_SOURCE,
+      minzoom: 8,
+      layout: {
+        visibility: "none",
+        "text-field": ["get", "marker"],
+        "text-font": ["Open Sans Regular"],
+        "text-size": 10,
+        "text-offset": [0, 1],
+        "text-anchor": "top",
+        "text-padding": 4,
+      },
+      paint: {
+        "text-color": "#7fd4c1",
+        "text-halo-color": "#04070c",
+        "text-halo-width": 1.4,
+        "text-opacity": 0.85,
+      },
+    });
+
     map.addLayer({
       id: FACILITY_LAYER,
       type: "circle",
@@ -664,6 +792,29 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", visibility);
     }
   }, [showReykjanes, reykjanes]);
+
+  // --- GNSS network ---
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !loadedRef.current) return;
+    geoJsonSource(map, GNSS_SOURCE)?.setData(toGnssGeoJson(stations));
+  }, [stations]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !loadedRef.current) return;
+    const visibility = showStations ? "visible" : "none";
+    for (const layerId of [GNSS_LAYER, GNSS_LABEL_LAYER]) {
+      if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", visibility);
+    }
+  }, [showStations, stations]);
+
+  // --- Interferogram overlay ---
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !loadedRef.current) return;
+    setInsarOverlay(map, insar, firstSymbolLayerId(map));
+  }, [insar]);
 
   // --- Pulse animation --------------------------------------------------------
   useEffect(() => {

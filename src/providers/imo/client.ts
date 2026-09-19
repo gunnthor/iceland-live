@@ -20,6 +20,7 @@ export const IMO_API_VERSIONS = {
   quakes: process.env.IMO_QUAKES_API_VERSION ?? "2026-08-06",
   volcanoes: process.env.IMO_VOLCANOES_API_VERSION ?? "2026-06-04",
   cap: process.env.IMO_CAP_API_VERSION ?? "2026-04-14",
+  epos: process.env.IMO_EPOS_API_VERSION ?? "2026-02-05",
 } as const;
 
 export type ImoService = keyof typeof IMO_API_VERSIONS;

@@ -6,6 +6,7 @@ import { Timeline } from "@/components/charts/Timeline";
 import { MapView, type MapPadding, type MapViewHandle } from "@/components/map/MapView";
 import { ActivityFeed, type FeedSort } from "@/components/ui/ActivityFeed";
 import { AlertsPanel } from "@/components/ui/AlertsPanel";
+import { DeformationPanel } from "@/components/ui/DeformationPanel";
 import { BottomSheet, type SheetSnap } from "@/components/ui/BottomSheet";
 import { Brand } from "@/components/ui/Brand";
 import { MapControls } from "@/components/ui/MapControls";
@@ -18,10 +19,12 @@ import { ErrorBanner, LoadingState, UnavailableState } from "@/components/ui/Sta
 import type { EarthquakesResponse, VolcanoesResult } from "@/domain/api";
 import type { VolcanicSystem } from "@/domain/volcano";
 import type { OfficialAlert } from "@/domain/alert";
+import type { Interferogram } from "@/domain/deformation";
 import { useEarthquakeData } from "@/hooks/useEarthquakeData";
 import { useEarthquakeDetail } from "@/hooks/useEarthquakeDetail";
 import { useAlerts } from "@/hooks/useAlerts";
 import { useReykjanesLayer } from "@/hooks/useReykjanesLayer";
+import { useDeformation } from "@/hooks/useDeformation";
 import { lavaFlowsByRecency } from "@/domain/reykjanes";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { useNow } from "@/hooks/useNow";
@@ -57,10 +60,14 @@ export function AppShell({
     eventId,
     showVolcanoes,
     showReykjanes,
+    showDeformation,
+    insarId,
     setRange,
     setEventId,
     setShowVolcanoes,
     setShowReykjanes,
+    setShowDeformation,
+    setInsarId,
   } = useUrlState();
   const isDesktop = useMediaQuery(DESKTOP_QUERY, true);
   const nowMs = useNow(serverNowMs);
@@ -80,6 +87,13 @@ export function AppShell({
 
   const { alerts, unavailable: alertsUnavailable } = useAlerts();
   const reykjanes = useReykjanesLayer(showReykjanes);
+  const deformation = useDeformation(showDeformation);
+
+  /** The interferogram named in the URL, once the catalogue has loaded. */
+  const selectedInsar = useMemo(
+    () => deformation.interferograms.find((item) => item.id === insarId) ?? null,
+    [deformation.interferograms, insarId],
+  );
   /** The one warning area currently drawn on the map, if any. */
   const [alertArea, setAlertArea] = useState<GeoJSON.FeatureCollection | null>(null);
 
@@ -222,6 +236,19 @@ export function AppShell({
     [alertArea, isDesktop],
   );
 
+  /** Lays an interferogram over the map and frames its footprint. */
+  const selectInterferogram = useCallback(
+    (item: Interferogram) => {
+      const alreadyShown = item.id === insarId;
+      setInsarId(alreadyShown ? null : item.id);
+      if (!alreadyShown) {
+        mapRef.current?.fitBounds(item.bounds, { maxZoom: 11 });
+        if (!isDesktop) setSheetSnap("peek");
+      }
+    },
+    [insarId, setInsarId, isDesktop],
+  );
+
   const focusArea = useCallback(
     (focus: MapFocus) => {
       mapRef.current?.fitBounds(focus.bounds);
@@ -301,6 +328,16 @@ export function AppShell({
         observationWindowCapped={data.observationWindow.capped}
         onFocusObservation={focusObservation}
       />
+      {showDeformation && (
+        <DeformationPanel
+          interferograms={deformation.interferograms}
+          selectedId={insarId}
+          onSelect={selectInterferogram}
+          onClear={() => setInsarId(null)}
+          loading={deformation.loading}
+          unavailable={deformation.unavailable}
+        />
+      )}
       <ActivityFeed
         quakes={quakes}
         sort={sort}
@@ -349,6 +386,13 @@ export function AppShell({
         alertArea={alertArea}
         reykjanes={reykjanes.layer}
         showReykjanes={showReykjanes && reykjanes.layer !== null}
+        stations={deformation.stations}
+        showStations={showDeformation}
+        insar={
+          selectedInsar
+            ? { imageUrl: selectedInsar.imageUrl, bounds: selectedInsar.bounds }
+            : null
+        }
         padding={padding}
       />
 
@@ -424,6 +468,10 @@ export function AppShell({
           onToggleReykjanes={setShowReykjanes}
           reykjanesAvailable={!reykjanes.unavailable}
           reykjanesLoading={reykjanes.loading}
+          showDeformation={showDeformation}
+          onToggleDeformation={setShowDeformation}
+          deformationAvailable={!deformation.unavailable}
+          deformationLoading={deformation.loading}
           latestEruption={latestEruption}
         />
       </div>

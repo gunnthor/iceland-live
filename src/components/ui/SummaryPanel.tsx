@@ -44,6 +44,12 @@ function ObservationRow({
               {observation.detail}
             </p>
 
+            {observation.context && (
+              <p className="mt-1 text-[12px] leading-relaxed text-[var(--color-ink-dim)]">
+                {observation.context}
+              </p>
+            )}
+
             <div className="mt-1 flex items-center gap-1">
               {observation.focus && (
                 <button

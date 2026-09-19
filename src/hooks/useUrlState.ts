@@ -18,6 +18,9 @@ export type UrlState = {
   eventId: string | null;
   showVolcanoes: boolean;
   showReykjanes: boolean;
+  showDeformation: boolean;
+  /** Id of the interferogram laid over the map, if any. */
+  insarId: string | null;
 };
 
 export type UrlStateActions = {
@@ -25,6 +28,8 @@ export type UrlStateActions = {
   setEventId: (eventId: string | null) => void;
   setShowVolcanoes: (show: boolean) => void;
   setShowReykjanes: (show: boolean) => void;
+  setShowDeformation: (show: boolean) => void;
+  setInsarId: (id: string | null) => void;
 };
 
 export function readUrlState(params: URLSearchParams): UrlState {
@@ -33,6 +38,8 @@ export function readUrlState(params: URLSearchParams): UrlState {
     eventId: params.get("event"),
     showVolcanoes: params.get("volcanoes") === "1",
     showReykjanes: params.get("reykjanes") === "1",
+    showDeformation: params.get("deformation") === "1",
+    insarId: params.get("insar"),
   };
 }
 
@@ -85,6 +92,30 @@ export function useUrlState(): UrlState & UrlStateActions {
         update((params) => {
           if (show) params.set("reykjanes", "1");
           else params.delete("reykjanes");
+        }),
+      [update],
+    ),
+    setShowDeformation: useCallback(
+      (show) =>
+        update((params) => {
+          if (show) params.set("deformation", "1");
+          else {
+            params.delete("deformation");
+            // The overlay belongs to the layer; switching it off clears it.
+            params.delete("insar");
+          }
+        }),
+      [update],
+    ),
+    setInsarId: useCallback(
+      (id) =>
+        update((params) => {
+          if (id) {
+            params.set("insar", id);
+            params.set("deformation", "1");
+          } else {
+            params.delete("insar");
+          }
         }),
       [update],
     ),

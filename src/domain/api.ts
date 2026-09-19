@@ -10,6 +10,7 @@ import type { Histogram } from "@/analytics/histogram";
 import type { EarthquakeStats } from "@/analytics/stats";
 import type { Summary } from "@/analytics/summary";
 import type { OfficialAlert } from "./alert";
+import type { GnssStation, Interferogram } from "./deformation";
 import type { Earthquake } from "./earthquake";
 import type { EarthquakeDetail } from "./earthquake-detail";
 import type { TimeRangeId } from "./time-range";
@@ -92,3 +93,15 @@ export type ReykjanesResponse = {
 };
 
 export type ReykjanesResult = ReykjanesResponse | ApiErrorResponse;
+
+export type DeformationResponse = {
+  ok: true;
+  generatedAt: string;
+  /** Published interferograms, newest acquisition first. */
+  interferograms: Interferogram[];
+  /** GNSS stations. Metadata only — this API publishes no displacements. */
+  stations: GnssStation[];
+  meta: ProviderMeta;
+};
+
+export type DeformationResult = DeformationResponse | ApiErrorResponse;

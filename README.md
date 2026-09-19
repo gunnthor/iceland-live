@@ -7,10 +7,11 @@ The homepage *is* the application: you land on a dark map of Iceland with every
 earthquake IMO has recorded in your selected window, sized by magnitude and
 coloured by how recently it happened. No marketing page, no sign-up.
 
-**Scope.** Earthquakes are the core and are done properly. On top of that sit three
-toggleable layers built on official data: volcanic systems with their IMO aviation
-colour codes, official CAP warnings, and Reykjanes detail (lava, barriers, graben).
-Everything else in the roadmap is deliberately not built yet.
+**Scope.** Earthquakes are the core and are done properly. On top of that sit
+layers built on official data: volcanic systems with their IMO aviation colour
+codes, official CAP warnings, Reykjanes detail (lava, barriers, graben) and
+published radar interferograms. Everything else in the roadmap is deliberately
+not built yet.
 
 ---
 
@@ -55,15 +56,19 @@ Everything else in the roadmap is deliberately not built yet.
 - **"What's happening"** — a deterministic prose summary generated from the data.
   No language model involved.
 - **Activity observations** — thresholded statistical findings (dense clusters,
-  repeated M2+ events, rate changes), each with its calculation shown on request.
+  repeated M2+ events, rate changes), each with its calculation shown on request,
+  and each compared against that region's own preceding record so "46 earthquakes
+  in 26 hours" comes with "about 11× the usual rate for Norðurland".
 - **Volcanic systems layer** — central volcanoes, caldera rims and fissure swarms
   from the Catalogue of Icelandic Volcanoes, with each system's official IMO
   aviation colour code.
 - **Reykjanes detail layer** — lava from the twelve mapped eruptions of 2021–2025,
   the lava barriers protecting Grindavík and Svartsengi, the Grindavík subsidence
   graben as mapped from InSAR, and the peninsula's geothermal plants.
+- **Ground deformation** — IMO's published radar interferograms, laid over the map
+  georeferenced, plus the GNSS station network.
 - **Quick-focus viewpoints** for Iceland, Reykjanes and Grindavík.
-- **Shareable URLs** — `?range=7d&event=IMO2026smblhr&volcanoes=1&reykjanes=1`.
+- **Shareable URLs** — `?range=7d&event=IMO2026smblhr&volcanoes=1&reykjanes=1&deformation=1&insar=<id>`.
 
 ---
 
@@ -275,6 +280,44 @@ would be indistinguishable from it. The quick-focus viewpoints are camera
 framing, which is a hint about where to look, not a claim about where something
 is.
 
+### Deformation — EPOS API (pinned `2026-02-05`)
+
+```
+GET https://api.vedur.is/epos/satellite/insar/wrapped
+GET https://api.vedur.is/epos/gps/station?format_type=GeoJSON
+```
+
+**What EPOS publishes, and what it does not.** This is worth stating plainly
+because it shaped the feature:
+
+- **Interferograms — yes.** 142 products covering Fagradalsfjall (to October
+  2023) and Sundhnúkur (to July 2025). Each is a finished IMO product: two radar
+  acquisitions differenced, with a rendered PNG, a bounding box, both
+  acquisition dates, the orbit direction and the satellite. We lay the published
+  image over the map, georeferenced to its own bounds, and measure nothing from
+  it.
+- **GNSS displacement time series — no.** The `/gps/*` endpoints serve station
+  metadata, site logs, and raw RINEX observation files. Turning RINEX into
+  displacements requires full geodetic processing; doing that here and
+  presenting the result as fact is exactly what this project refuses to do. So
+  the GNSS layer shows where the instruments are and links to IMO's own data —
+  14 stations on Reykjanes, including SENG at Svartsengi and GRIV at Grindavík.
+- **Live webcams — no.** The webcam endpoint holds three datasets, all from the
+  2014–15 Holuhraun eruption, published as `.tar.gz` archives. There is no live
+  camera feed in this API.
+
+The same applies to plume height: real CoverageJSON observations, but from past
+eruptions rather than a current feed.
+
+**The image proxy.** `data.epos-iceland.is` serves the PNGs with no
+`Access-Control-Allow-Origin` header, and MapLibre draws a raster source onto a
+WebGL texture — a cross-origin read the browser refuses. So the images are
+served through `/api/insar/image`, which is allowlisted to `https` URLs on that
+one host with a `.png` path. A proxy that fetches whatever a query parameter
+names is an open relay, usable to reach internal addresses from our own server.
+The products are immutable (the filename encodes sensor and both dates), so they
+are cached for a year.
+
 ### Volcanic systems — Volcanoes API (pinned `2026-06-04`)
 
 ```
@@ -317,6 +360,7 @@ src/
 │   ├── earthquake.ts    Earthquake, EventType, ReviewStatus
 │   ├── earthquake-detail.ts   Measured values, isFixedDepth
 │   ├── alert.ts         OfficialAlert — IMO's assessment, never ours
+│   ├── deformation.ts   Interferogram, GnssStation
 │   ├── reykjanes.ts     Lava flows, barriers, graben, facilities
 │   ├── volcano.ts       VolcanicSystem, AviationStatus, VolcanicAlertLevel
 │   ├── time-range.ts    The five windows, and how to resolve one to instants
@@ -335,18 +379,20 @@ src/
 │   ├── earthquake-detail.ts   Per-event solutions, bounded LRU
 │   ├── alerts.ts        Official warnings
 │   ├── volcanoes.ts
-│   └── reykjanes.ts
+│   ├── reykjanes.ts
+│   └── deformation.ts   interferograms + GNSS network
 │
 ├── analytics/       Pure functions over normalized data. Heavily tested.
 │   ├── stats.ts         counts, largest, deepest, latest, region tallies
 │   ├── histogram.ts     adaptive time binning
 │   ├── clusters.ts      DBSCAN + thresholded activity observations
+│   ├── baseline.ts      region rate vs its own preceding record
 │   └── summary.ts       deterministic prose
 │
 ├── app/             Next.js routes.
 │   ├── page.tsx         Server-renders the first payload
-│   └── api/             /api/earthquakes[/:id] · /api/alerts
-│                        /api/volcanoes · /api/reykjanes
+│   └── api/             /api/earthquakes[/:id] · /api/alerts · /api/volcanoes
+│                        /api/reykjanes · /api/insar[/image]
 │
 ├── components/
 │   ├── map/             MapView, base-style tuning, layer specs, GeoJSON builders
@@ -355,7 +401,8 @@ src/
 │   └── AppShell.tsx     Orchestration and layout
 │
 ├── hooks/           useEarthquakeData · useEarthquakeDetail · useAlerts
-│                  useReykjanesLayer · useUrlState · useNow · useMediaQuery
+│                  useReykjanesLayer · useDeformation · useUrlState
+│                  useNow · useMediaQuery
 └── lib/             time · format · geo · simplify
 ```
 
@@ -431,6 +478,8 @@ on screen instead of an empty map. Concurrent callers share one in-flight fetch.
 | `/api/alerts` | `s-maxage=180, swr=600` | 3min / 30min |
 | `/api/volcanoes` | `s-maxage=3600, swr=86400` | 1h / 24h |
 | `/api/reykjanes` | `s-maxage=86400, swr=604800` | 24h / 7d |
+| `/api/insar` | `s-maxage=21600, swr=604800` | 6h / 7d |
+| `/api/insar/image` | `max-age=31536000, immutable` | — (proxied, immutable) |
 | any of them, degraded | `no-store` | — |
 
 The stale windows are not uniform, and the differences are deliberate. Six hours
@@ -477,6 +526,26 @@ surfaced at 3 or more.
 earlier two thirds. Reported at ≥ 2× with at least 10 recent and 5 baseline events —
 that last condition stops us announcing a "doubling" that is really one quiet hour
 followed by two ordinary ones.
+
+**Baselines.** A cluster observation also states how that area's current rate
+compares with its own preceding record, because "46 earthquakes in 26 hours" is
+a fact a reader cannot judge without knowing what the area normally does — forty
+a day is routine on the Reykjanes Ridge and remarkable under Öræfajökull.
+
+The baseline window is the catalogue we hold *minus* the observation window.
+Excluding it matters: leaving the current burst inside its own baseline drags
+the average up and hides the thing being measured. Both periods are reduced to
+events per day and the ratio is reported, with both counts and both rates shown
+in the method note.
+
+The comparison is made **across the whole region, not the cluster** — a cluster
+is a spatial group picked out by this window, so it has no history to compare
+against; the region does. Ratios between 0.6 and 1.6 are reported as "close to
+the usual rate" rather than as a number, and nothing is reported at all below 5
+events in the window, 8 in the baseline, or 3 days of history. A ratio against
+one region's own thirty days is not a probability and not a forecast: if those
+thirty days were themselves unusual, so is the baseline, which is why the period
+is always stated.
 
 **The summary** is assembled from counts, the dominant region (when one holds ≥ 35%
 of events), the largest event, and a note when under half the catalogue has been
@@ -587,6 +656,12 @@ that is where upstream reality meets our assumptions.
 - **Warnings are relayed, not interpreted.** We show what is in force; we do not
   model what it means for a given location, and a warning's polygon is IMO's
   forecast region, not a precise hazard boundary.
+- **Deformation is not live.** Interferograms appear only after IMO processes an
+  acquisition pair; the most recent covers July 2025. There is no real-time
+  deformation here, and none is available through this API.
+- **Baselines are only as good as thirty days.** The catalogue we hold is the
+  only history we have, so a region whose whole month was unusual will have an
+  unusual baseline. The period is always stated for exactly this reason.
 - **Reykjanes lava is historical.** Twelve mapped eruptions through July 2025. If
   a new eruption began, its flow would not appear here until the surveying
   agencies published an outline — this layer is a record, not a live feed.
@@ -611,22 +686,22 @@ that is where upstream reality meets our assumptions.
 
 **Next up**
 
-1. **GNSS deformation from EPOS** (`/gps/station`, `/gps/rinex`). Inflation at
-   Svartsengi is the signal that actually precedes the Sundhnúkur eruptions, and
-   it is the largest remaining gap between this site and what a reader watching
-   Reykjanes genuinely wants. Descriptive time series only.
-2. **Webcams and plume observations** (`/volcano/monitoring-data/webcam`,
-   `/plume-height`). During unrest a live camera is the single most-wanted thing
-   on a page like this, and it requires no interpretation from us at all.
-3. **Historical context for the observations.** We can say "46 earthquakes within
-   6 km over 26 hours"; we cannot yet say how that compares with the same area's
-   own baseline. Computing a per-region background rate from the catalogue would
-   turn a bare count into something a reader can actually judge — and it is the
-   honest version of the "how unusual is today" question.
+1. **Longer history for baselines.** The Quakes API goes back to 1991, but we
+   hold thirty days, so "usual" means "usual this month". Fetching a year for
+   the active regions and caching it hard would let the comparison say how a
+   month ranks against a year — the honest core of "how unusual is today".
+2. **Depth structure over time.** The catalogue carries depth on every event and
+   we currently only report the deepest. Depth against time for a selected
+   cluster is a descriptive view of something real and is available today with
+   no new data source.
+3. **An events-per-region view.** Region tallies already exist internally but are
+   only used to pick a name for the summary. Exposed as a sortable list with each
+   region's rate against its own baseline, it would answer "where is Iceland busy
+   right now" in one glance.
 
 **Later**
 
-- *Volcano mode* — EPOS shakemaps, InSAR interferograms, eruption imagery.
+- *Volcano mode* — EPOS shakemaps, eruption imagery, tephra and SO₂ hazard maps.
 - *Air* — SO₂, PM2.5, PM10, H₂S, NO₂ from the Environment and Energy Agency.
 - *Roads* — conditions, closures, road weather stations, webcams (Vegagerðin).
 - *Weather* — wind, precipitation, temperature, alerts.
@@ -659,6 +734,11 @@ Meteorological Office; Grindavík graben mapping from Landmælingar Íslands
 (InSAR, November 2023); geothermal plant locations from
 [Orkustofnun](https://orkustofnun.is/). Served through those agencies' public
 GeoServer instances, indexed by IMO's GIS API.
+
+**Deformation**: interferograms and GNSS station metadata from
+[EPOS Iceland](https://api.vedur.is/epos/), operated by the Icelandic
+Meteorological Office. Sentinel-1, TerraSAR-X, COSMO-SkyMed and SAOCOM
+acquisitions, processed and published by IMO.
 
 **Basemap**: [CARTO](https://carto.com/attributions) · [OpenStreetMap contributors](https://www.openstreetmap.org/copyright)
 

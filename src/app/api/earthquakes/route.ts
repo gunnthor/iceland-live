@@ -40,7 +40,7 @@ export async function GET(request: Request): Promise<NextResponse> {
 
     const quakes = filterByRange(snapshot.quakes, from, to);
     const stats = computeStats(quakes, { from, to });
-    const observations = detectObservations({ quakes, from, to });
+    const observations = detectObservations({ quakes, from, to, catalogue: snapshot.quakes });
 
     const body: EarthquakesResponse = {
       ok: true,

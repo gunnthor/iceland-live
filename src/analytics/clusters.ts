@@ -56,6 +56,7 @@
 
 import type { Earthquake } from "@/domain/earthquake";
 import { centroid, distanceKm, LAT_DEGREES_PER_KM, lonDegreesPerKm, type LatLon } from "@/lib/geo";
+import { baselineMethod, computeRegionBaseline, describeBaseline } from "./baseline";
 
 export const CLUSTER_EPS_KM = 5;
 /** Groups wider than this are regional background rather than a cluster. */
@@ -237,6 +238,11 @@ export type ActivityObservation = {
   detail: string;
   /** Plain-language description of the calculation, shown on request. */
   method: string;
+  /**
+   * How this compares with the area's own recent rate, when there is enough
+   * history to say. Absent rather than guessed at when there is not.
+   */
+  context?: string;
   /** Where to fly the map, when the observation has a location. */
   focus?: { centre: LatLon; radiusKm: number };
   /** Ids of the events the observation is derived from. */
@@ -247,6 +253,12 @@ export type ObservationInput = {
   quakes: readonly Earthquake[];
   from: Date;
   to: Date;
+  /**
+   * The full catalogue we hold, used to work out what is normal for a region.
+   * Defaults to `quakes`, which yields no comparison — the window cannot be its
+   * own baseline.
+   */
+  catalogue?: readonly Earthquake[];
 };
 
 export type ObservationResult = {
@@ -266,7 +278,12 @@ export type ObservationResult = {
  * Returns an empty list when nothing meets the thresholds — a quiet period
  * should read as quiet, not be padded with weak findings.
  */
-export function detectObservations({ quakes, from, to }: ObservationInput): ObservationResult {
+export function detectObservations({
+  quakes,
+  from,
+  to,
+  catalogue,
+}: ObservationInput): ObservationResult {
   const maxWindowMs = OBSERVATION_MAX_WINDOW_HOURS * 3_600_000;
   const requestedMs = to.getTime() - from.getTime();
   const windowCapped = requestedMs > maxWindowMs;
@@ -302,12 +319,29 @@ export function detectObservations({ quakes, from, to }: ObservationInput): Obse
       (Date.parse(cluster.latestAt) - Date.parse(cluster.earliestAt)) / 3_600_000,
     );
 
+    /*
+     * Context, where the catalogue supports it.
+     *
+     * "46 earthquakes over 26 hours" is a fact a reader cannot judge without
+     * knowing what that area normally does. The comparison is against the
+     * region's own preceding record, and is omitted entirely when there is too
+     * little of it to mean anything.
+     */
+    const baseline =
+      catalogue && cluster.region
+        ? computeRegionBaseline(cluster.region, { catalogue, from: effectiveFrom, to })
+        : null;
+
     result.observations.push({
       id: `dense-${cluster.id}`,
       kind: "dense-cluster",
       headline: "Elevated earthquake activity",
       detail: `${cluster.events.length} earthquakes were recorded within ${formatKm(cluster.radiusKm)} of ${place} over ${formatHours(spanHours)}.`,
-      method: `DBSCAN clustering with a ${CLUSTER_EPS_KM} km radius and a minimum of ${CLUSTER_MIN_POINTS} neighbouring events. Reported at ${DENSE_CLUSTER_MIN_EVENTS} events or more, and only when the group spans no more than ${CLUSTER_MAX_RADIUS_KM} km.`,
+      method:
+        `DBSCAN clustering with a ${CLUSTER_EPS_KM} km radius and a minimum of ${CLUSTER_MIN_POINTS} neighbouring events. ` +
+        `Reported at ${DENSE_CLUSTER_MIN_EVENTS} events or more, and only when the group spans no more than ${CLUSTER_MAX_RADIUS_KM} km.` +
+        (baseline ? ` ${baselineMethod(baseline)}` : ""),
+      ...(baseline ? { context: describeBaseline(baseline) } : {}),
       focus: { centre: cluster.centre, radiusKm: cluster.radiusKm },
       eventIds: cluster.events.map((event) => event.id),
     });

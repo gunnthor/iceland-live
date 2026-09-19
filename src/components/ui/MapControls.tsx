@@ -162,6 +162,10 @@ export function MapControls({
   onToggleReykjanes,
   reykjanesAvailable,
   reykjanesLoading,
+  showDeformation,
+  onToggleDeformation,
+  deformationAvailable,
+  deformationLoading,
   latestEruption,
   className,
 }: {
@@ -173,6 +177,10 @@ export function MapControls({
   onToggleReykjanes: (show: boolean) => void;
   reykjanesAvailable: boolean;
   reykjanesLoading: boolean;
+  showDeformation: boolean;
+  onToggleDeformation: (show: boolean) => void;
+  deformationAvailable: boolean;
+  deformationLoading: boolean;
   /** Newest mapped lava flow, shown in the Reykjanes legend. */
   latestEruption: LavaFlowProperties | null;
   className?: string;
@@ -235,6 +243,19 @@ export function MapControls({
             volcanoesAvailable
               ? "Volcanic system outlines from the Catalogue of Icelandic Volcanoes, with each system's official IMO aviation colour code"
               : "Volcanic system data is not available right now"
+          }
+        />
+        <LayerToggle
+          label="Deformation"
+          checked={showDeformation}
+          onChange={onToggleDeformation}
+          available={deformationAvailable}
+          loading={deformationLoading}
+          dotColour="#8ab4f8"
+          title={
+            deformationAvailable
+              ? "IMO's published radar interferograms, plus the GNSS station network. Select an interferogram in the panel to lay it over the map."
+              : "Deformation products are not available right now"
           }
         />
         <LayerToggle

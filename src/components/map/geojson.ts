@@ -2,6 +2,7 @@
 
 import type { Earthquake } from "@/domain/earthquake";
 import { aviationRank, isAboveBackground, type VolcanicSystem } from "@/domain/volcano";
+import { isActive, type GnssStation } from "@/domain/deformation";
 import { UNKNOWN_MAGNITUDE_SIZE, type QuakeFeatureProps } from "./quake-layers";
 
 export type QuakeFeatureCollection = GeoJSON.FeatureCollection<GeoJSON.Point, QuakeFeatureProps>;
@@ -105,5 +106,30 @@ export function toVolcanoPointGeoJson(
           elevated: isAboveBackground(system) ? 1 : 0,
         },
       })),
+  };
+}
+
+export type GnssFeatureProps = {
+  marker: string;
+  name: string;
+  /** Whether the station is still recording. Drives the marker colour. */
+  active: boolean;
+};
+
+/** Station markers for the monitoring-network layer. */
+export function toGnssGeoJson(
+  stations: readonly GnssStation[],
+): GeoJSON.FeatureCollection<GeoJSON.Point, GnssFeatureProps> {
+  return {
+    type: "FeatureCollection",
+    features: stations.map((station) => ({
+      type: "Feature",
+      geometry: { type: "Point", coordinates: [station.longitude, station.latitude] },
+      properties: {
+        marker: station.marker,
+        name: station.name,
+        active: isActive(station),
+      },
+    })),
   };
 }
