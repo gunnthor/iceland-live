@@ -295,3 +295,23 @@ export function baselineMethod(baseline: RegionBaseline): string {
     `This is a comparison against one region's own record, not a probability or a forecast.`
   );
 }
+
+/**
+ * Attaches the year comparison to a set of region tallies.
+ *
+ * Kept out of `tallyByRegion` so the pure counting stays independent of whether
+ * history happens to be available.
+ */
+export function withBaselines<T extends { region: string; count: number }>(
+  tallies: readonly T[],
+  window: { from: Date; to: Date },
+  history: RegionHistorySnapshot | null,
+): Array<T & { ratio?: number; percentile?: number }> {
+  if (!history) return tallies.map((tally) => ({ ...tally }));
+
+  return tallies.map((tally) => {
+    const baseline = computeHistoricalBaseline(tally.region, window, tally.count, history);
+    if (!baseline) return { ...tally };
+    return { ...tally, ratio: baseline.ratio, percentile: baseline.percentile };
+  });
+}

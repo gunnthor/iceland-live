@@ -109,19 +109,48 @@ export type RegionTally = {
   count: number;
   /** Highest magnitude recorded in this region during the window. */
   largestMagnitude: number | null;
+  /** Mean position of the region's events, for framing the map. */
+  centre: { latitude: number; longitude: number } | null;
+  /** Most recent event in this region, ISO instant. */
+  latestAt: string | null;
+  /**
+   * How this window compares with the region's own year, when history allows.
+   * Computed by the server and attached here so the list can rank by it.
+   */
+  ratio?: number;
+  /** Share of days in the past year quieter than this window's rate. */
+  percentile?: number;
 };
 
 /** Event counts per IMO seismic region, busiest first. */
 export function tallyByRegion(quakes: readonly Earthquake[]): RegionTally[] {
-  const tally = new Map<string, { count: number; largest: number | null }>();
+  type Accumulator = {
+    count: number;
+    largest: number | null;
+    latestAt: string | null;
+    latSum: number;
+    lonSum: number;
+  };
+
+  const tally = new Map<string, Accumulator>();
 
   for (const quake of quakes) {
     if (!quake.region) continue;
-    const entry = tally.get(quake.region) ?? { count: 0, largest: null };
+    const entry =
+      tally.get(quake.region) ??
+      { count: 0, largest: null, latestAt: null, latSum: 0, lonSum: 0 };
+
     entry.count += 1;
+    entry.latSum += quake.latitude;
+    entry.lonSum += quake.longitude;
+
     if (quake.magnitude !== null && (entry.largest === null || quake.magnitude > entry.largest)) {
       entry.largest = quake.magnitude;
     }
+    if (entry.latestAt === null || quake.occurredAt > entry.latestAt) {
+      entry.latestAt = quake.occurredAt;
+    }
+
     tally.set(quake.region, entry);
   }
 
@@ -130,6 +159,11 @@ export function tallyByRegion(quakes: readonly Earthquake[]): RegionTally[] {
       region,
       count: entry.count,
       largestMagnitude: entry.largest,
+      latestAt: entry.latestAt,
+      centre: {
+        latitude: entry.latSum / entry.count,
+        longitude: entry.lonSum / entry.count,
+      },
     }))
     .sort((a, b) => b.count - a.count || a.region.localeCompare(b.region, "is"));
 }

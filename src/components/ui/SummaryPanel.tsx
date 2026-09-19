@@ -1,8 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { ActivityObservation } from "@/analytics/clusters";
 import type { Summary } from "@/analytics/summary";
+import { DepthProfile } from "@/components/charts/DepthProfile";
+import type { Earthquake } from "@/domain/earthquake";
 import { cn } from "@/lib/format";
 
 /**
@@ -21,12 +23,30 @@ import { cn } from "@/lib/format";
 
 function ObservationRow({
   observation,
+  quakesById,
+  selectedId,
   onFocus,
+  onSelectEvent,
 }: {
   observation: ActivityObservation;
+  quakesById: Map<string, Earthquake>;
+  selectedId: string | null;
   onFocus: (observation: ActivityObservation) => void;
+  onSelectEvent: (id: string) => void;
 }) {
   const [showMethod, setShowMethod] = useState(false);
+  const [showDepth, setShowDepth] = useState(false);
+
+  /** The observation's own events, resolved from the loaded catalogue. */
+  const members = useMemo(
+    () =>
+      observation.eventIds
+        .map((id) => quakesById.get(id))
+        .filter((quake): quake is Earthquake => quake !== undefined),
+    [observation.eventIds, quakesById],
+  );
+
+  const hasDepths = members.some((quake) => quake.depthKm !== null);
 
   return (
     <li className="border-t border-[var(--color-line)] first:border-t-0">
@@ -60,6 +80,16 @@ function ObservationRow({
                   Show on map
                 </button>
               )}
+              {hasDepths && (
+                <button
+                  type="button"
+                  onClick={() => setShowDepth((open) => !open)}
+                  aria-expanded={showDepth}
+                  className="rounded px-1.5 py-2 text-[11px] text-[var(--color-ink-dim)] underline-offset-2 transition-colors duration-150 hover:text-[var(--color-ink)] hover:underline"
+                >
+                  {showDepth ? "Hide depths" : "Depths"}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setShowMethod((open) => !open)}
@@ -69,6 +99,16 @@ function ObservationRow({
                 {showMethod ? "Hide method" : "How is this calculated?"}
               </button>
             </div>
+
+            {showDepth && hasDepths && (
+              <div className="animate-fade-rise mt-2 rounded border border-[var(--color-line)] bg-white/[0.02] px-2.5 py-2">
+                <DepthProfile
+                  quakes={members}
+                  selectedId={selectedId}
+                  onSelect={onSelectEvent}
+                />
+              </div>
+            )}
 
             {showMethod && (
               <p className="animate-fade-rise mt-2 rounded border border-[var(--color-line)] bg-white/[0.02] px-2.5 py-2 text-[11px] leading-relaxed text-[var(--color-ink-dim)]">
@@ -86,15 +126,27 @@ export function SummaryPanel({
   summary,
   observations,
   observationWindowCapped,
+  quakes,
+  selectedId,
   onFocusObservation,
+  onSelectEvent,
   className,
 }: {
   summary: Summary;
   observations: readonly ActivityObservation[];
   observationWindowCapped: boolean;
+  /** The loaded catalogue, so observations can resolve their own events. */
+  quakes: readonly Earthquake[];
+  selectedId: string | null;
   onFocusObservation: (observation: ActivityObservation) => void;
+  onSelectEvent: (id: string) => void;
   className?: string;
 }) {
+  // Built once per render of the panel rather than once per observation row.
+  const quakesById = useMemo(
+    () => new Map(quakes.map((quake) => [quake.id, quake])),
+    [quakes],
+  );
   return (
     <section aria-label="What is happening" className={cn("", className)}>
       <div className="px-4 pb-4 pt-4">
@@ -126,7 +178,10 @@ export function SummaryPanel({
               <ObservationRow
                 key={observation.id}
                 observation={observation}
+                quakesById={quakesById}
+                selectedId={selectedId}
                 onFocus={onFocusObservation}
+                onSelectEvent={onSelectEvent}
               />
             ))}
           </ul>

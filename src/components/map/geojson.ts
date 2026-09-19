@@ -3,6 +3,7 @@
 import type { Earthquake } from "@/domain/earthquake";
 import { aviationRank, isAboveBackground, type VolcanicSystem } from "@/domain/volcano";
 import { isActive, type GnssStation } from "@/domain/deformation";
+import type { WebcamSite } from "@/domain/webcam";
 import { UNKNOWN_MAGNITUDE_SIZE, type QuakeFeatureProps } from "./quake-layers";
 
 export type QuakeFeatureCollection = GeoJSON.FeatureCollection<GeoJSON.Point, QuakeFeatureProps>;
@@ -130,6 +131,26 @@ export function toGnssGeoJson(
         name: station.name,
         active: isActive(station),
       },
+    })),
+  };
+}
+
+export type WebcamFeatureProps = {
+  id: number;
+  name: string;
+  views: number;
+};
+
+/** Camera sites for the road-camera layer. */
+export function toWebcamGeoJson(
+  sites: readonly WebcamSite[],
+): GeoJSON.FeatureCollection<GeoJSON.Point, WebcamFeatureProps> {
+  return {
+    type: "FeatureCollection",
+    features: sites.map((site) => ({
+      type: "Feature",
+      geometry: { type: "Point", coordinates: [site.longitude, site.latitude] },
+      properties: { id: site.id, name: site.name, views: site.views.length },
     })),
   };
 }

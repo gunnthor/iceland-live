@@ -7,6 +7,8 @@ import { MapView, type MapPadding, type MapViewHandle } from "@/components/map/M
 import { ActivityFeed, type FeedSort } from "@/components/ui/ActivityFeed";
 import { AlertsPanel } from "@/components/ui/AlertsPanel";
 import { DeformationPanel } from "@/components/ui/DeformationPanel";
+import { RegionList } from "@/components/ui/RegionList";
+import { WebcamPanel } from "@/components/ui/WebcamPanel";
 import { BottomSheet, type SheetSnap } from "@/components/ui/BottomSheet";
 import { Brand } from "@/components/ui/Brand";
 import { MapControls } from "@/components/ui/MapControls";
@@ -20,11 +22,14 @@ import type { EarthquakesResponse, VolcanoesResult } from "@/domain/api";
 import type { VolcanicSystem } from "@/domain/volcano";
 import type { OfficialAlert } from "@/domain/alert";
 import type { Interferogram } from "@/domain/deformation";
+import type { RegionTally } from "@/analytics/stats";
+import type { WebcamSite } from "@/domain/webcam";
 import { useEarthquakeData } from "@/hooks/useEarthquakeData";
 import { useEarthquakeDetail } from "@/hooks/useEarthquakeDetail";
 import { useAlerts } from "@/hooks/useAlerts";
 import { useReykjanesLayer } from "@/hooks/useReykjanesLayer";
 import { useDeformation } from "@/hooks/useDeformation";
+import { useWebcams } from "@/hooks/useWebcams";
 import { lavaFlowsByRecency } from "@/domain/reykjanes";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { useNow } from "@/hooks/useNow";
@@ -61,12 +66,14 @@ export function AppShell({
     showVolcanoes,
     showReykjanes,
     showDeformation,
+    showWebcams,
     insarId,
     setRange,
     setEventId,
     setShowVolcanoes,
     setShowReykjanes,
     setShowDeformation,
+    setShowWebcams,
     setInsarId,
   } = useUrlState();
   const isDesktop = useMediaQuery(DESKTOP_QUERY, true);
@@ -88,6 +95,16 @@ export function AppShell({
   const { alerts, unavailable: alertsUnavailable } = useAlerts();
   const reykjanes = useReykjanesLayer(showReykjanes);
   const deformation = useDeformation(showDeformation);
+  const webcams = useWebcams(showWebcams);
+
+  /**
+   * Where the current activity is centred, used to order the camera list.
+   * The busiest region is the best single answer to "what am I looking at".
+   */
+  const activityFocus = useMemo(
+    () => data?.regions.find((region) => region.centre !== null)?.centre ?? null,
+    [data],
+  );
 
   /** The interferogram named in the URL, once the catalogue has loaded. */
   const selectedInsar = useMemo(
@@ -249,6 +266,39 @@ export function AppShell({
     [insarId, setInsarId, isDesktop],
   );
 
+  /** Centres the map on a camera site. */
+  const focusWebcam = useCallback(
+    (site: WebcamSite) => {
+      mapRef.current?.flyToPoint(site.longitude, site.latitude, 11);
+      if (!isDesktop) setSheetSnap("half");
+    },
+    [isDesktop],
+  );
+
+  /** Frames a region's events, using the mean position of what we plotted. */
+  const focusRegion = useCallback(
+    (region: RegionTally) => {
+      if (!region.centre) return;
+      const members = quakes.filter((quake) => quake.region === region.region);
+      if (members.length === 0) return;
+
+      let west = Infinity;
+      let south = Infinity;
+      let east = -Infinity;
+      let north = -Infinity;
+      for (const quake of members) {
+        if (quake.longitude < west) west = quake.longitude;
+        if (quake.longitude > east) east = quake.longitude;
+        if (quake.latitude < south) south = quake.latitude;
+        if (quake.latitude > north) north = quake.latitude;
+      }
+
+      mapRef.current?.fitBounds(padBounds({ west, south, east, north }, 8), { maxZoom: 10 });
+      if (!isDesktop) setSheetSnap("peek");
+    },
+    [quakes, isDesktop],
+  );
+
   const focusArea = useCallback(
     (focus: MapFocus) => {
       mapRef.current?.fitBounds(focus.bounds);
@@ -326,7 +376,10 @@ export function AppShell({
         summary={data.summary}
         observations={data.observations}
         observationWindowCapped={data.observationWindow.capped}
+        quakes={quakes}
+        selectedId={eventId}
         onFocusObservation={focusObservation}
+        onSelectEvent={focusEvent}
       />
       {showDeformation && (
         <DeformationPanel
@@ -338,6 +391,17 @@ export function AppShell({
           unavailable={deformation.unavailable}
         />
       )}
+      {showWebcams && (
+        <WebcamPanel
+          sites={webcams.sites}
+          focus={activityFocus}
+          attribution={webcams.attribution}
+          loading={webcams.loading}
+          unavailable={webcams.unavailable}
+          onSelectSite={focusWebcam}
+        />
+      )}
+      <RegionList regions={data.regions} nowMs={nowMs} onSelect={focusRegion} />
       <ActivityFeed
         quakes={quakes}
         sort={sort}
@@ -393,6 +457,8 @@ export function AppShell({
             ? { imageUrl: selectedInsar.imageUrl, bounds: selectedInsar.bounds }
             : null
         }
+        webcams={webcams.sites}
+        showWebcams={showWebcams}
         padding={padding}
       />
 
@@ -472,6 +538,10 @@ export function AppShell({
           onToggleDeformation={setShowDeformation}
           deformationAvailable={!deformation.unavailable}
           deformationLoading={deformation.loading}
+          showWebcams={showWebcams}
+          onToggleWebcams={setShowWebcams}
+          webcamsAvailable={!webcams.unavailable}
+          webcamsLoading={webcams.loading}
           latestEruption={latestEruption}
         />
       </div>

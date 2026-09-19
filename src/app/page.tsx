@@ -1,7 +1,8 @@
 import { Suspense } from "react";
 import { detectObservations } from "@/analytics/clusters";
 import { buildHistogram } from "@/analytics/histogram";
-import { computeStats, filterByRange } from "@/analytics/stats";
+import { computeStats, filterByRange, tallyByRegion } from "@/analytics/stats";
+import { withBaselines } from "@/analytics/baseline";
 import { buildSummary } from "@/analytics/summary";
 import { AppShell } from "@/components/AppShell";
 import type { EarthquakesResponse } from "@/domain/api";
@@ -58,6 +59,7 @@ async function loadInitialData(range: string | undefined): Promise<InitialPayloa
       stats,
       summary: buildSummary(quakes, stats, resolved),
       observations: observations.observations,
+      regions: withBaselines(tallyByRegion(quakes), { from, to }, history?.history ?? null),
       observationWindow: {
         from: observations.window.from,
         to: observations.window.to,

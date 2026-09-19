@@ -166,6 +166,10 @@ export function MapControls({
   onToggleDeformation,
   deformationAvailable,
   deformationLoading,
+  showWebcams,
+  onToggleWebcams,
+  webcamsAvailable,
+  webcamsLoading,
   latestEruption,
   className,
 }: {
@@ -181,6 +185,10 @@ export function MapControls({
   onToggleDeformation: (show: boolean) => void;
   deformationAvailable: boolean;
   deformationLoading: boolean;
+  showWebcams: boolean;
+  onToggleWebcams: (show: boolean) => void;
+  webcamsAvailable: boolean;
+  webcamsLoading: boolean;
   /** Newest mapped lava flow, shown in the Reykjanes legend. */
   latestEruption: LavaFlowProperties | null;
   className?: string;
@@ -256,6 +264,19 @@ export function MapControls({
             deformationAvailable
               ? "IMO's published radar interferograms, plus the GNSS station network. Select an interferogram in the panel to lay it over the map."
               : "Deformation products are not available right now"
+          }
+        />
+        <LayerToggle
+          label="Road cameras"
+          checked={showWebcams}
+          onChange={onToggleWebcams}
+          available={webcamsAvailable}
+          loading={webcamsLoading}
+          dotColour="#c3b3f0"
+          title={
+            webcamsAvailable
+              ? "Live road cameras from Vegagerdin. Images refresh about once a minute."
+              : "Road cameras are not available right now"
           }
         />
         <LayerToggle

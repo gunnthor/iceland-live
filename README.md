@@ -67,8 +67,15 @@ not built yet.
   graben as mapped from InSAR, and the peninsula's geothermal plants.
 - **Ground deformation** — IMO's published radar interferograms, laid over the map
   georeferenced, plus the GNSS station network.
+- **By region** — every active region for the window, ranked by how unusual it is
+  *for itself*. Twenty-two events at Kleifarvatn is an ordinary day; eight on the
+  Reykjanes Ridge is not, and a raw count cannot tell you that.
+- **Depth over time** — depth against time for any observation's events, so a
+  cluster confined to one level reads differently from one spanning the crust.
+- **Live road cameras** — Vegagerðin's national network, ordered by distance from
+  wherever the activity is, refreshing about once a minute.
 - **Quick-focus viewpoints** for Iceland, Reykjanes and Grindavík.
-- **Shareable URLs** — `?range=7d&event=IMO2026smblhr&volcanoes=1&reykjanes=1&deformation=1&insar=<id>`.
+- **Shareable URLs** — `?range=7d&event=<id>&volcanoes=1&reykjanes=1&deformation=1&cams=1&insar=<id>`.
 
 ---
 
@@ -318,6 +325,37 @@ names is an open relay, usable to reach internal addresses from our own server.
 The products are immutable (the filename encodes sensor and both dates), so they
 are cached for a year.
 
+### Road cameras — Vegagerðin open data
+
+```
+GET https://gagnaveita.vegagerdin.is/api/vefmyndavelar2014_1
+```
+
+IMO's own webcam endpoint holds three `.tar.gz` archives from the 2014–15
+Holuhraun eruption and nothing live, so the cameras come from the **Icelandic
+Road and Coastal Administration** instead: ~497 views across ~165 sites,
+refreshing several times an hour. The coverage happens to be exactly what this
+product wants — Gíghæð on Grindavíkurvegur, Festarfjall on Suðurstrandarvegur,
+Kleifarvatn and Sveifluháls on Krýsuvíkurvegur.
+
+Field names are Icelandic, and one is a trap: `Breidd` is **latitude** (it also
+means "width") and `Lengd` is **longitude**.
+
+**Terms.** IRCA's open data licence permits copying, publishing, distributing
+and commercial use, on condition that the source is acknowledged with a specific
+sentence and that use does not imply official status or endorsement. That
+sentence — *"Based on information provided by the Icelandic Road and Coastal
+Administration (IRCA)"* — is in `IRCA_ATTRIBUTION` and is rendered wherever the
+images appear, alongside a note that we are not affiliated with them.
+
+**The image proxy.** Unlike the interferograms this is not a CORS requirement —
+an `<img>` needs no CORS. It is a courtesy: every viewer loading directly would
+put our traffic on IRCA's servers, whereas proxying with a 60-second shared
+cache means they see at most one request per image per minute however many
+people have the page open. It also keeps our referrer off their logs and gives
+us one place to stop if they ask. Same allowlist discipline as the
+interferogram proxy: `https`, their host, an image extension.
+
 ### Volcanic systems — Volcanoes API (pinned `2026-06-04`)
 
 ```
@@ -361,6 +399,8 @@ src/
 │   ├── earthquake-detail.ts   Measured values, isFixedDepth
 │   ├── alert.ts         OfficialAlert — IMO's assessment, never ours
 │   ├── deformation.ts   Interferogram, GnssStation
+│   ├── region-history.ts  a year of per-region daily counts
+│   ├── webcam.ts        WebcamSite, IRCA attribution
 │   ├── reykjanes.ts     Lava flows, barriers, graben, facilities
 │   ├── volcano.ts       VolcanicSystem, AviationStatus, VolcanicAlertLevel
 │   ├── time-range.ts    The five windows, and how to resolve one to instants
@@ -369,8 +409,9 @@ src/
 ├── providers/       Everything that talks to the outside world.
 │   ├── types.ts         EarthquakeProvider, VolcanoProvider, ProviderResult, ProviderError
 │   ├── registry.ts      The one place that picks an implementation
-│   ├── imo/             client · quakes · detail · volcanoes · CAP warnings
+│   ├── imo/             client · quakes · detail · volcanoes · CAP · EPOS
 │   ├── gis/             WFS client · Reykjanes layers (lava, barriers, graben)
+│   ├── vegagerdin/      live road cameras
 │   └── fixtures/        Offline snapshot provider
 │
 ├── server/          Caching and the degraded-mode policy.
@@ -380,29 +421,32 @@ src/
 │   ├── alerts.ts        Official warnings
 │   ├── volcanoes.ts
 │   ├── reykjanes.ts
-│   └── deformation.ts   interferograms + GNSS network
+│   ├── deformation.ts   interferograms + GNSS network
+│   ├── region-history.ts  the year that baselines compare against
+│   └── webcams.ts
 │
 ├── analytics/       Pure functions over normalized data. Heavily tested.
 │   ├── stats.ts         counts, largest, deepest, latest, region tallies
 │   ├── histogram.ts     adaptive time binning
 │   ├── clusters.ts      DBSCAN + thresholded activity observations
-│   ├── baseline.ts      region rate vs its own preceding record
+│   ├── baseline.ts      region rate and rank vs its own year
 │   └── summary.ts       deterministic prose
 │
 ├── app/             Next.js routes.
 │   ├── page.tsx         Server-renders the first payload
 │   └── api/             /api/earthquakes[/:id] · /api/alerts · /api/volcanoes
 │                        /api/reykjanes · /api/insar[/image]
+│                        /api/webcams[/image]
 │
 ├── components/
 │   ├── map/             MapView, base-style tuning, layer specs, GeoJSON builders
-│   ├── charts/          Timeline
+│   ├── charts/          Timeline · DepthProfile
 │   ├── ui/              Panels, feed, detail, controls, states
 │   └── AppShell.tsx     Orchestration and layout
 │
 ├── hooks/           useEarthquakeData · useEarthquakeDetail · useAlerts
-│                  useReykjanesLayer · useDeformation · useUrlState
-│                  useNow · useMediaQuery
+│                  useReykjanesLayer · useDeformation · useWebcams
+│                  useUrlState · useNow · useMediaQuery
 └── lib/             time · format · geo · simplify
 ```
 
@@ -480,6 +524,13 @@ on screen instead of an empty map. Concurrent callers share one in-flight fetch.
 | `/api/reykjanes` | `s-maxage=86400, swr=604800` | 24h / 7d |
 | `/api/insar` | `s-maxage=21600, swr=604800` | 6h / 7d |
 | `/api/insar/image` | `max-age=31536000, immutable` | — (proxied, immutable) |
+| `/api/webcams` | `s-maxage=21600, swr=604800` | 6h / 7d (catalogue only) |
+| `/api/webcams/image` | `s-maxage=60, swr=120` | — (proxied, deliberately short) |
+
+The year of region history is cached separately for 24 hours and kept for a
+fortnight: one upstream request a day for ~35,000 events, reduced in about 30 ms
+to ~86 KB of daily counts. A baseline a day out of date is still a good
+baseline; having none costs every observation its context.
 | any of them, degraded | `no-store` | — |
 
 The stale windows are not uniform, and the differences are deliberate. Six hours
@@ -528,24 +579,38 @@ that last condition stops us announcing a "doubling" that is really one quiet ho
 followed by two ordinary ones.
 
 **Baselines.** A cluster observation also states how that area's current rate
-compares with its own preceding record, because "46 earthquakes in 26 hours" is
-a fact a reader cannot judge without knowing what the area normally does — forty
-a day is routine on the Reykjanes Ridge and remarkable under Öræfajökull.
+compares with its own record, because "46 earthquakes in 26 hours" is a fact a
+reader cannot judge without knowing what the area normally does — forty a day is
+routine on the Reykjanes Ridge and remarkable under Öræfajökull.
 
-The baseline window is the catalogue we hold *minus* the observation window.
-Excluding it matters: leaving the current burst inside its own baseline drags
-the average up and hides the thing being measured. Both periods are reduced to
-events per day and the ratio is reported, with both counts and both rates shown
-in the method note.
+The comparison is against **a year** of that region's daily counts, and the
+window is also **ranked inside that region's own distribution**. The ranking is
+the part that actually answers "is this unusual": a 3× ratio means something
+different in a region that swings by an order of magnitude week to week than in
+one that never does. Days with no recorded events count as zeros, because
+ranking today only against days a region was already active flatters quiet
+regions into looking permanently busy.
+
+A rank sentence only ever *qualifies* a rate already outside the typical band.
+In a region whose daily count barely varies, a rate a shade above the mean can
+outrank every day on record while being entirely ordinary, and "close to the
+usual rate, and among the busiest days ever" contradicts itself.
 
 The comparison is made **across the whole region, not the cluster** — a cluster
 is a spatial group picked out by this window, so it has no history to compare
 against; the region does. Ratios between 0.6 and 1.6 are reported as "close to
-the usual rate" rather than as a number, and nothing is reported at all below 5
-events in the window, 8 in the baseline, or 3 days of history. A ratio against
-one region's own thirty days is not a probability and not a forecast: if those
-thirty days were themselves unusual, so is the baseline, which is why the period
-is always stated.
+the usual rate" rather than as a number, and nothing is reported below 5 events
+in the window, 8 in the baseline, or 3 days of history. The method note states
+whether the window was excluded from its own baseline — true over a month, where
+leaving the burst in hides it; false over a year, where one day moves the mean by
+a fraction of a percent.
+
+**Why a year and not a decade.** The Quakes API accepts dates back to 1991, but
+the SeisComP catalogue only begins around 2015 and is patchy before 2020 — the
+earlier record lives in the legacy SIL system, which has different detection
+characteristics and a different completeness threshold. Comparing across the two
+would manufacture rate changes that are really catalogue changes. Continuity was
+checked month by month over 18 months before settling on a year.
 
 **The summary** is assembled from counts, the dominant region (when one holds ≥ 35%
 of events), the largest event, and a note when under half the catalogue has been
@@ -659,9 +724,20 @@ that is where upstream reality meets our assumptions.
 - **Deformation is not live.** Interferograms appear only after IMO processes an
   acquisition pair; the most recent covers July 2025. There is no real-time
   deformation here, and none is available through this API.
-- **Baselines are only as good as thirty days.** The catalogue we hold is the
-  only history we have, so a region whose whole month was unusual will have an
-  unusual baseline. The period is always stated for exactly this reason.
+- **Baselines are only as good as a year.** A region whose whole year was
+  unusual will have an unusual baseline, and the SeisComP record does not go back
+  far enough to do better without mixing catalogues. The period is always stated
+  for exactly this reason.
+- **Region baselines are region-shaped.** IMO's seismic regions vary enormously
+  in area, so a ratio compares a region with its own past and never one region
+  with another. The list sorts by that ratio; it does not claim Norðurland and
+  Kleifarvatn are comparable places.
+- **Road cameras point at roads.** They are the best live imagery publicly
+  available for Iceland, but they were installed to show driving conditions. A
+  camera near an eruption may well be looking the other way.
+- **Depth is inferred as fixed from its value.** The bulk catalogue carries no
+  `depthType`, so the depth chart marks exactly 10.00 km as assigned. The detail
+  panel gets the real answer from the per-event endpoint; the chart is a hint.
 - **Reykjanes lava is historical.** Twelve mapped eruptions through July 2025. If
   a new eruption began, its flow would not appear here until the surveying
   agencies published an outline — this layer is a record, not a live feed.
@@ -686,24 +762,23 @@ that is where upstream reality meets our assumptions.
 
 **Next up**
 
-1. **Longer history for baselines.** The Quakes API goes back to 1991, but we
-   hold thirty days, so "usual" means "usual this month". Fetching a year for
-   the active regions and caching it hard would let the comparison say how a
-   month ranks against a year — the honest core of "how unusual is today".
-2. **Depth structure over time.** The catalogue carries depth on every event and
-   we currently only report the deepest. Depth against time for a selected
-   cluster is a descriptive view of something real and is available today with
-   no new data source.
-3. **An events-per-region view.** Region tallies already exist internally but are
-   only used to pick a name for the summary. Exposed as a sortable list with each
-   region's rate against its own baseline, it would answer "where is Iceland busy
-   right now" in one glance.
+1. **Air quality.** The Environment and Energy Agency publishes SO₂, PM2.5 and
+   H₂S from a monitoring network, and volcanic gas is the hazard that most often
+   reaches Reykjavík when Reykjanes erupts. It is the largest remaining gap
+   between this site and "what do I actually need to know today".
+2. **Road conditions to go with the cameras.** Vegagerðin's DATEX II and
+   road-condition services sit beside the webcam API already in use, and a
+   camera showing a closed road is more useful when the closure is labelled.
+3. **Persisting the region history.** The year of daily counts is rebuilt from
+   scratch on a cold start, which costs one 5 MB fetch. Storing the reduced
+   counts would make cold starts instant and open the door to multi-year
+   baselines without re-fetching.
 
 **Later**
 
 - *Volcano mode* — EPOS shakemaps, eruption imagery, tephra and SO₂ hazard maps.
 - *Air* — SO₂, PM2.5, PM10, H₂S, NO₂ from the Environment and Energy Agency.
-- *Roads* — conditions, closures, road weather stations, webcams (Vegagerðin).
+- *Roads* — conditions, closures, road weather stations (Vegagerðin).
 - *Weather* — wind, precipitation, temperature, alerts.
 - *Historical analytics* — is activity increasing, how unusual is today, where has
   activity migrated. Requires great care to keep description separate from
@@ -739,6 +814,11 @@ GeoServer instances, indexed by IMO's GIS API.
 [EPOS Iceland](https://api.vedur.is/epos/), operated by the Icelandic
 Meteorological Office. Sentinel-1, TerraSAR-X, COSMO-SkyMed and SAOCOM
 acquisitions, processed and published by IMO.
+
+**Road cameras**: Based on information provided by the Icelandic Road and
+Coastal Administration (IRCA) — [Vegagerðin](https://www.vegagerdin.is/), used
+under their [open data terms](https://www.vegagerdin.is/vegagerdin/gagnasafn/vefthjonustur/terms-and-conditions).
+Iceland Live is not affiliated with IRCA and this use is not endorsed by them.
 
 **Basemap**: [CARTO](https://carto.com/attributions) · [OpenStreetMap contributors](https://www.openstreetmap.org/copyright)
 

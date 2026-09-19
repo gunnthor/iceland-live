@@ -19,7 +19,8 @@
 import { NextResponse } from "next/server";
 import { detectObservations } from "@/analytics/clusters";
 import { buildHistogram } from "@/analytics/histogram";
-import { computeStats, filterByRange } from "@/analytics/stats";
+import { computeStats, filterByRange, tallyByRegion } from "@/analytics/stats";
+import { withBaselines } from "@/analytics/baseline";
 import { buildSummary } from "@/analytics/summary";
 import type { ApiErrorResponse, EarthquakesResponse } from "@/domain/api";
 import { parseTimeRange, resolveWindow } from "@/domain/time-range";
@@ -61,6 +62,7 @@ export async function GET(request: Request): Promise<NextResponse> {
       stats,
       summary: buildSummary(quakes, stats, range),
       observations: observations.observations,
+      regions: withBaselines(tallyByRegion(quakes), { from, to }, history?.history ?? null),
       observationWindow: {
         from: observations.window.from,
         to: observations.window.to,

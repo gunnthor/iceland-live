@@ -11,6 +11,8 @@ import type { EarthquakeStats } from "@/analytics/stats";
 import type { Summary } from "@/analytics/summary";
 import type { OfficialAlert } from "./alert";
 import type { GnssStation, Interferogram } from "./deformation";
+import type { WebcamSite } from "./webcam";
+import type { RegionTally } from "@/analytics/stats";
 import type { Earthquake } from "./earthquake";
 import type { EarthquakeDetail } from "./earthquake-detail";
 import type { TimeRangeId } from "./time-range";
@@ -32,6 +34,11 @@ export type EarthquakesResponse = {
   stats: EarthquakeStatsPayload;
   summary: Summary;
   observations: ActivityObservation[];
+  /**
+   * Per-region activity for this window, busiest first, each compared against
+   * that region's own year where history allows.
+   */
+  regions: RegionTally[];
   /**
    * The window the observations cover. Narrower than `window` for the 7d and
    * 30d ranges, where observations are capped so "elevated activity" stays a
@@ -105,3 +112,14 @@ export type DeformationResponse = {
 };
 
 export type DeformationResult = DeformationResponse | ApiErrorResponse;
+
+export type WebcamsResponse = {
+  ok: true;
+  generatedAt: string;
+  sites: WebcamSite[];
+  /** The acknowledgement IRCA's terms require; rendered wherever images are. */
+  attribution: string;
+  meta: ProviderMeta;
+};
+
+export type WebcamsResult = WebcamsResponse | ApiErrorResponse;

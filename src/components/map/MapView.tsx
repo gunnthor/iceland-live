@@ -12,6 +12,7 @@ import type { Earthquake } from "@/domain/earthquake";
 import type maplibregl from "maplibre-gl";
 import type { GnssStation } from "@/domain/deformation";
 import type { ReykjanesLayer } from "@/domain/reykjanes";
+import type { WebcamSite } from "@/domain/webcam";
 import type { VolcanicSystem } from "@/domain/volcano";
 import type { BoundingBox } from "@/lib/geo";
 import { DEFAULT_FOCUS } from "@/lib/geo";
@@ -21,6 +22,7 @@ import {
   toQuakeGeoJson,
   toVolcanoLineGeoJson,
   toVolcanoPointGeoJson,
+  toWebcamGeoJson,
 } from "./geojson";
 import {
   pulseLayer,
@@ -109,6 +111,9 @@ const INSAR_LAYER = "insar-raster";
 const GNSS_SOURCE = "gnss-stations";
 const GNSS_LAYER = "gnss-station";
 const GNSS_LABEL_LAYER = "gnss-station-label";
+const WEBCAM_SOURCE = "webcams";
+const WEBCAM_LAYER = "webcam-site";
+const WEBCAM_LABEL_LAYER = "webcam-site-label";
 
 /** Every layer belonging to the Reykjanes detail set, toggled together. */
 const REYKJANES_LAYERS = [
@@ -157,6 +162,8 @@ type MapData = {
   stations: readonly GnssStation[];
   showStations: boolean;
   insar: InsarOverlay | null;
+  webcams: readonly WebcamSite[];
+  showWebcams: boolean;
 };
 
 /**
@@ -205,6 +212,12 @@ function applyAll(map: MapLibreMap, data: MapData): void {
   }
 
   setInsarOverlay(map, data.insar, firstSymbolLayerId(map));
+
+  geoJsonSource(map, WEBCAM_SOURCE)?.setData(toWebcamGeoJson(data.webcams));
+  const webcamVisibility = data.showWebcams ? "visible" : "none";
+  for (const layerId of [WEBCAM_LAYER, WEBCAM_LABEL_LAYER]) {
+    if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", webcamVisibility);
+  }
 }
 
 export type MapViewProps = {
@@ -225,6 +238,9 @@ export type MapViewProps = {
   showStations: boolean;
   /** Interferogram overlay, or null when none is selected. */
   insar: InsarOverlay | null;
+  /** Road camera sites. */
+  webcams: readonly WebcamSite[];
+  showWebcams: boolean;
   /** Space reserved for the surrounding panels, so framing stays visible. */
   padding: MapPadding;
   onReady?: () => void;
@@ -256,6 +272,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     stations,
     showStations,
     insar,
+    webcams,
+    showWebcams,
     padding,
     onReady,
   },
@@ -289,6 +307,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     stations,
     showStations,
     insar,
+    webcams,
+    showWebcams,
   });
   latestRef.current = {
     quakes,
@@ -302,6 +322,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     stations,
     showStations,
     insar,
+    webcams,
+    showWebcams,
   };
 
   useImperativeHandle(
@@ -443,7 +465,14 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       type: "geojson",
       data: { type: "FeatureCollection", features: [] },
     });
-    for (const id of [LAVA_SOURCE, BARRIER_SOURCE, GRABEN_SOURCE, FACILITY_SOURCE, GNSS_SOURCE]) {
+    for (const id of [
+      LAVA_SOURCE,
+      BARRIER_SOURCE,
+      GRABEN_SOURCE,
+      FACILITY_SOURCE,
+      GNSS_SOURCE,
+      WEBCAM_SOURCE,
+    ]) {
       map.addSource(id, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
     }
 
@@ -688,6 +717,46 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       },
     });
 
+    /*
+     * Road cameras. Drawn above the events, because they are things you click
+     * rather than data you read, and a marker hidden under a swarm is useless.
+     */
+    map.addLayer({
+      id: WEBCAM_LAYER,
+      type: "circle",
+      source: WEBCAM_SOURCE,
+      layout: { visibility: "none" },
+      paint: {
+        "circle-radius": ["interpolate", ["linear"], ["zoom"], 5, 2.4, 10, 5],
+        "circle-color": "#0b0e13",
+        "circle-stroke-width": 1.6,
+        "circle-stroke-color": "#c3b3f0",
+        "circle-stroke-opacity": 0.9,
+      },
+    });
+
+    map.addLayer({
+      id: WEBCAM_LABEL_LAYER,
+      type: "symbol",
+      source: WEBCAM_SOURCE,
+      minzoom: 9,
+      layout: {
+        visibility: "none",
+        "text-field": ["get", "name"],
+        "text-font": ["Open Sans Regular"],
+        "text-size": 10,
+        "text-offset": [0, 1],
+        "text-anchor": "top",
+        "text-padding": 4,
+      },
+      paint: {
+        "text-color": "#c3b3f0",
+        "text-halo-color": "#04070c",
+        "text-halo-width": 1.4,
+        "text-opacity": 0.9,
+      },
+    });
+
     map.addLayer({
       id: VOLCANO_LABEL_LAYER,
       type: "symbol",
@@ -814,6 +883,22 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", visibility);
     }
   }, [showStations, stations]);
+
+  // --- Road cameras ---
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !loadedRef.current) return;
+    geoJsonSource(map, WEBCAM_SOURCE)?.setData(toWebcamGeoJson(webcams));
+  }, [webcams]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !loadedRef.current) return;
+    const visibility = showWebcams ? "visible" : "none";
+    for (const layerId of [WEBCAM_LAYER, WEBCAM_LABEL_LAYER]) {
+      if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", visibility);
+    }
+  }, [showWebcams, webcams]);
 
   // --- Interferogram overlay ---
   useEffect(() => {

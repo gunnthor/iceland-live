@@ -192,10 +192,27 @@ describe("tallyByRegion", () => {
       quake({ region: "Katla", magnitude: 0.5 }),
     ]);
 
-    expect(result).toEqual([
-      { region: "Reykjanes", count: 2, largestMagnitude: 2.4 },
-      { region: "Katla", count: 1, largestMagnitude: 0.5 },
+    expect(result.map((r) => ({ ...r, centre: null, latestAt: null }))).toEqual([
+      { region: "Reykjanes", count: 2, largestMagnitude: 2.4, centre: null, latestAt: null },
+      { region: "Katla", count: 1, largestMagnitude: 0.5, centre: null, latestAt: null },
     ]);
+  });
+
+  it("averages member positions so the list can frame a region on the map", () => {
+    const result = tallyByRegion([
+      quake({ region: "Reykjanes", latitude: 63.8, longitude: -22.0 }),
+      quake({ region: "Reykjanes", latitude: 64.0, longitude: -22.4 }),
+    ]);
+    expect(result[0]?.centre?.latitude).toBeCloseTo(63.9, 5);
+    expect(result[0]?.centre?.longitude).toBeCloseTo(-22.2, 5);
+  });
+
+  it("records the most recent event per region", () => {
+    const result = tallyByRegion([
+      quake({ region: "Katla", occurredAt: "2026-09-19T01:00:00.000Z" }),
+      quake({ region: "Katla", occurredAt: "2026-09-19T09:00:00.000Z" }),
+    ]);
+    expect(result[0]?.latestAt).toBe("2026-09-19T09:00:00.000Z");
   });
 
   it("skips events with no region rather than inventing one", () => {
@@ -204,6 +221,6 @@ describe("tallyByRegion", () => {
 
   it("reports a null largest magnitude when a region has no measured magnitudes", () => {
     const result = tallyByRegion([quake({ region: "Hekla", magnitude: null })]);
-    expect(result[0]).toEqual({ region: "Hekla", count: 1, largestMagnitude: null });
+    expect(result[0]).toMatchObject({ region: "Hekla", count: 1, largestMagnitude: null });
   });
 });
