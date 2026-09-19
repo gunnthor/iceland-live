@@ -298,3 +298,80 @@ describe("observation guards", () => {
     expect(result.observations).toEqual([]);
   });
 });
+
+describe("observation spans", () => {
+  /** A tight cluster, so the dense-cluster observation always fires. */
+  function burst(count: number, startMs: number, stepMs: number): Earthquake[] {
+    return Array.from({ length: count }, (_, index) =>
+      quake({
+        id: `b${index}`,
+        latitude: 63.9 + index * 0.0005,
+        longitude: -22.4 + index * 0.0005,
+        occurredAt: new Date(startMs + index * stepMs).toISOString(),
+        region: "Reykjanes",
+      }),
+    );
+  }
+
+  const to = new Date("2026-09-19T22:00:00.000Z");
+  const from = new Date("2026-09-18T22:00:00.000Z");
+
+  it("gives a dense cluster the extent of its own events", () => {
+    // The sentence says "over N hours"; the band has to be those hours.
+    const start = Date.parse("2026-09-19T14:00:00.000Z");
+    const quakes = burst(14, start, 30 * 60_000);
+    const { observations } = rawDetectObservations({ quakes, from, to });
+
+    const dense = observations.find((item) => item.kind === "dense-cluster");
+    expect(dense?.span.from).toBe("2026-09-19T14:00:00.000Z");
+    expect(dense?.span.to).toBe(quakes[quakes.length - 1]?.occurredAt);
+  });
+
+  it("gives repeated moderate events the window its sentence counts over", () => {
+    const start = Date.parse("2026-09-19T14:00:00.000Z");
+    const quakes = burst(14, start, 30 * 60_000).map((event, index) =>
+      index < 4 ? { ...event, magnitude: 2.4 } : event,
+    );
+    const { observations, window } = rawDetectObservations({ quakes, from, to });
+
+    const moderate = observations.find((item) => item.kind === "repeated-moderate");
+    expect(moderate).toBeDefined();
+    expect(moderate?.span).toEqual(window);
+  });
+
+  it("gives a rate increase only the recent third", () => {
+    // Its sentence is about the most recent third, so a band covering the
+    // whole window would contradict the text above it.
+    const quakes = [
+      ...burst(6, from.getTime() + 60_000, 60 * 60_000),
+      ...burst(16, to.getTime() - 7 * 3_600_000, 20 * 60_000).map((event, index) => ({
+        ...event,
+        id: `r${index}`,
+      })),
+    ];
+    const { observations, window } = rawDetectObservations({ quakes, from, to });
+
+    const rate = observations.find((item) => item.kind === "rate-increase");
+    expect(rate).toBeDefined();
+
+    const windowFrom = Date.parse(window.from);
+    const windowTo = Date.parse(window.to);
+    const expectedSplit = windowFrom + (windowTo - windowFrom) * (2 / 3);
+    expect(Date.parse(rate!.span.from)).toBe(Math.round(expectedSplit));
+    expect(rate!.span.to).toBe(window.to);
+  });
+
+  it("never produces a span outside the observation window", () => {
+    const quakes = burst(14, Date.parse("2026-09-19T14:00:00.000Z"), 30 * 60_000);
+    const { observations, window } = rawDetectObservations({ quakes, from, to });
+
+    expect(observations.length).toBeGreaterThan(0);
+    for (const observation of observations) {
+      expect(Date.parse(observation.span.from)).toBeGreaterThanOrEqual(Date.parse(window.from));
+      expect(Date.parse(observation.span.to)).toBeLessThanOrEqual(Date.parse(window.to));
+      expect(Date.parse(observation.span.from)).toBeLessThanOrEqual(
+        Date.parse(observation.span.to),
+      );
+    }
+  });
+});

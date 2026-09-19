@@ -161,3 +161,29 @@ export function networkPeak(
   }
   return peak;
 }
+
+/**
+ * Stations ordered by distance from a point, nearest first.
+ *
+ * Mirrors `sitesNearest` for cameras, and exists for the same reason: an
+ * alphabetical list of monitoring stations is a list whose first entry is
+ * Akureyri no matter where the question is about.
+ *
+ * Squared degrees with longitude scaled for latitude — ordering only, never
+ * shown as a distance.
+ */
+export function stationsNearest(
+  stations: readonly AirQualityStation[],
+  point: { latitude: number; longitude: number },
+): AirQualityStation[] {
+  const scale = Math.cos((point.latitude * Math.PI) / 180) ** 2;
+  return [...stations]
+    .map((station) => ({
+      station,
+      d:
+        (station.latitude - point.latitude) ** 2 +
+        (station.longitude - point.longitude) ** 2 * scale,
+    }))
+    .sort((a, b) => a.d - b.d)
+    .map((entry) => entry.station);
+}

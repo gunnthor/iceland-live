@@ -183,6 +183,92 @@ export function hasKnownSource(run: DispersionRun): boolean {
   return latitude >= 62 && latitude <= 68 && longitude >= -26 && longitude <= -12;
 }
 
+/**
+ * One modelled series at one place, hour by hour.
+ *
+ * IMO's dispersion service will evaluate a run at an arbitrary latitude and
+ * longitude, which is how "what would this scenario put in the air *here*"
+ * gets answered with IMO's own numbers rather than by sampling pixels out of
+ * their picture. A colour read off a raster is a guess about a scale; this is
+ * the model's value.
+ *
+ * Still a scenario. The eruption behind these numbers is, on almost every
+ * day, not happening.
+ */
+export type DispersionPointSeries = {
+  /** As published, e.g. "5m Ash g/m3" or "0m SO2". */
+  name: string;
+  /** The run layer this series belongs to, parsed from `name`. */
+  layer: DispersionLayer;
+  /** Unit for `points[].value`. */
+  unit: string;
+  /** Oldest first. */
+  points: Array<{ at: string; value: number }>;
+};
+
+/**
+ * The unit a dispersion type is reported in.
+ *
+ * Taken from the type string where it carries one — "Ash g/m3" says so — and
+ * otherwise from IMO's own CALPUFF legend, which is published in µg/m³. The
+ * EPOS catalogue's `units` field is not used: it reports µg/m³ for the tephra
+ * products too, which contradicts their own series names.
+ */
+export function unitFor(dispersionType: string): string {
+  if (/kg\/m2$/i.test(dispersionType)) return "kg/m\u00b2";
+  if (/\bg\/m3$/i.test(dispersionType)) return "g/m\u00b3";
+  return "\u00b5g/m\u00b3";
+}
+
+/**
+ * Parses a graph series name into the layer it belongs to.
+ *
+ * `"300hPa Ash g/m3"` and `"0m SO2"` are the two shapes. Parsed rather than
+ * reconstructed and compared, so a change in IMO's spacing or ordering fails
+ * to match one series instead of silently mislabelling all of them.
+ */
+export function parseSeriesLayer(name: string): DispersionLayer | null {
+  const match = /^(\d+)(m|hPa)\s+(.+)$/.exec(name.trim());
+  if (!match) return null;
+  const [, altitude, unit, dispersionType] = match;
+  if (altitude === undefined || dispersionType === undefined) return null;
+  return {
+    dispersionType,
+    altitude: Number(altitude),
+    altitudeUnit: unit === "hPa" ? "hPa" : "m",
+  };
+}
+
+/** Whether a point falls inside a run's model grid. */
+export function withinBounds(
+  bounds: DispersionBounds,
+  point: { latitude: number; longitude: number },
+): boolean {
+  return (
+    point.latitude >= bounds.south &&
+    point.latitude <= bounds.north &&
+    point.longitude >= bounds.west &&
+    point.longitude <= bounds.east
+  );
+}
+
+/**
+ * The highest value in a series, and when it occurs.
+ *
+ * `null` when the model puts nothing here at any hour, which inside the grid
+ * is a real answer rather than missing data.
+ */
+export function peakOf(
+  series: DispersionPointSeries,
+): { at: string; value: number } | null {
+  let best: { at: string; value: number } | null = null;
+  for (const point of series.points) {
+    if (point.value <= 0) continue;
+    if (!best || point.value > best.value) best = point;
+  }
+  return best;
+}
+
 /** Stable key for a layer within a run, used in the URL and as a React key. */
 export function layerKey(layer: DispersionLayer): string {
   return `${layer.dispersionType}|${layer.altitude}|${layer.altitudeUnit}`;

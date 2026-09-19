@@ -11,7 +11,7 @@ import type { EarthquakeStats } from "@/analytics/stats";
 import type { Summary } from "@/analytics/summary";
 import type { OfficialAlert } from "./alert";
 import type { GnssStation, Interferogram } from "./deformation";
-import type { DispersionRun } from "./dispersion";
+import type { DispersionPointSeries, DispersionRun } from "./dispersion";
 import type { AirQualityStation } from "./air-quality";
 import type { RoadCondition, RoadWeatherStation } from "./roads";
 import type { WebcamSite } from "./webcam";
@@ -163,3 +163,19 @@ export type DispersionResponse = {
 };
 
 export type DispersionResult = DispersionResponse | ApiErrorResponse;
+
+/**
+ * A run evaluated at one place.
+ *
+ * Model output, hour by hour, for an eruption that is almost certainly not
+ * occurring. An empty `series` means the model grid covers the point but the
+ * run produced nothing there.
+ */
+export type DispersionPointResponse = {
+  ok: true;
+  generatedAt: string;
+  runId: string;
+  series: DispersionPointSeries[];
+};
+
+export type DispersionPointResult = DispersionPointResponse | ApiErrorResponse;

@@ -29,6 +29,14 @@ export type WebcamView = {
   id: string;
   /** What this angle looks at, in the source's own words (Icelandic). */
   description: string;
+  /**
+   * The address Vegagerðin publishes this view at.
+   *
+   * Present so the server can fetch a camera without picking its own proxy
+   * URL apart, and so the storage key is derived from one place. It is no more
+   * exposed than it already was — `imageUrl` carries it in a query parameter.
+   */
+  sourceUrl: string;
   /** Published image URL, rewritten to our proxy. */
   imageUrl: string;
   /**

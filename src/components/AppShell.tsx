@@ -35,6 +35,7 @@ import {
   type DispersionRun,
 } from "@/domain/dispersion";
 import type { RegionTally } from "@/analytics/stats";
+import { stationsNearest } from "@/domain/air-quality";
 import type { WebcamSite } from "@/domain/webcam";
 import { useEarthquakeData } from "@/hooks/useEarthquakeData";
 import { useEarthquakeDetail } from "@/hooks/useEarthquakeDetail";
@@ -44,6 +45,7 @@ import { useDeformation } from "@/hooks/useDeformation";
 import { useWebcams } from "@/hooks/useWebcams";
 import { useEnvironment } from "@/hooks/useEnvironment";
 import { useDispersion } from "@/hooks/useDispersion";
+import { useDispersionPoint } from "@/hooks/useDispersionPoint";
 import { lavaFlowsByRecency } from "@/domain/reykjanes";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { useNow } from "@/hooks/useNow";
@@ -182,6 +184,38 @@ export function AppShell({
       frame: initialFrame(frameTimes(selectedRun), nowHour * 3_600_000),
     };
   }, [selectedRun, plumeView, nowHour]);
+
+  /*
+   * The station the selected run is evaluated at.
+   *
+   * Component state rather than URL: it is a question asked about the run on
+   * screen, not part of what the link is showing. Unset falls back to the
+   * first station, which the panel resolves.
+   */
+  const [probeStationId, setProbeStationId] = useState<string | null>(null);
+
+  /*
+   * Ordered from the modelled source outwards, so the default is the place
+   * the question is actually about. The panel's own list is alphabetical,
+   * which would open a Reykjanes scenario on Akureyri.
+   */
+  const probeStations = useMemo(() => {
+    if (!selectedRun || environment.air.length === 0) return environment.air;
+    return stationsNearest(environment.air, selectedRun);
+  }, [environment.air, selectedRun]);
+
+  const probeStation = useMemo(
+    () =>
+      probeStations.find((station) => station.id === probeStationId) ??
+      probeStations[0] ??
+      null,
+    [probeStations, probeStationId],
+  );
+
+  const point = useDispersionPoint(
+    selectedRun && probeStation ? selectedRun.id : null,
+    probeStation,
+  );
 
   /** The frame currently laid over the map. */
   const plumeOverlay = useMemo(() => {
@@ -572,6 +606,14 @@ export function AppShell({
           nowMs={nowMs}
           loading={dispersion.loading}
           unavailable={dispersion.unavailable}
+          probe={{
+            stations: probeStations,
+            stationId: probeStation?.id ?? null,
+            onStationChange: setProbeStationId,
+            series: point.series,
+            loading: point.loading,
+            unavailable: point.unavailable,
+          }}
         />
       )}
       {showEnvironment && (
@@ -788,6 +830,7 @@ export function AppShell({
             histogram={data.histogram}
             quakes={quakes}
             range={range}
+            observations={data.observations}
             selectedId={eventId}
             onSelect={focusEvent}
           />
@@ -796,6 +839,7 @@ export function AppShell({
               stations={environment.air}
               fromMs={data.histogram.fromMs}
               toMs={data.histogram.toMs}
+              observations={data.observations}
               selected={airTrace}
               onSelect={setAirTrace}
               className="mt-2 border-t border-[var(--color-line)] pt-2"
@@ -814,6 +858,7 @@ export function AppShell({
                 histogram={data.histogram}
                 quakes={quakes}
                 range={range}
+                observations={data.observations}
                 selectedId={eventId}
                 onSelect={focusEvent}
               />
@@ -822,6 +867,7 @@ export function AppShell({
                   stations={environment.air}
                   fromMs={data.histogram.fromMs}
                   toMs={data.histogram.toMs}
+                  observations={data.observations}
                   selected={airTrace}
                   onSelect={setAirTrace}
                   className="mt-2 border-t border-[var(--color-line)] pt-2"

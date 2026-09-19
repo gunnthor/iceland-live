@@ -22,6 +22,7 @@
 
 import {
   sortRuns,
+  type DispersionPointSeries,
   type DispersionRun,
 } from "@/domain/dispersion";
 import type { ProviderAttribution, ProviderResult } from "@/providers/types";
@@ -30,6 +31,7 @@ import {
   latestPerScenario,
   mergeRun,
   normalizeCatalogue,
+  normalizePointSeries,
   normalizeSimulation,
 } from "./dispersion-normalize";
 
@@ -67,6 +69,40 @@ const RUN_REVALIDATE_SECONDS = 24 * 60 * 60;
 export class ImoDispersionProvider {
   readonly id = "imo-dispersion";
   readonly attribution = DISPERSION_ATTRIBUTION;
+
+  /**
+   * Evaluates a run at one place.
+   *
+   * The service answers 200 with zeros for a point outside the model grid
+   * rather than refusing, so callers must check the run's bounds first —
+   * "the model puts nothing here" and "this place is not in the model" are
+   * different answers and only one of them is true outside the grid.
+   */
+  async fetchPointSeries(
+    runId: string,
+    latitude: number,
+    longitude: number,
+  ): Promise<ProviderResult<DispersionPointSeries[]>> {
+    const payload = await imoFetchJson<unknown>({
+      service: "dispersion",
+      path:
+        `/graphs/location/uuid/${encodeURIComponent(runId)}` +
+        `/lat/${latitude}/lng/${longitude}/srid/4326`,
+      // A finished run's output never changes, so this is worth holding on to.
+      revalidateSeconds: RUN_REVALIDATE_SECONDS,
+      timeoutMs: 25_000,
+    });
+
+    return {
+      data: normalizePointSeries(payload),
+      meta: {
+        providerId: this.id,
+        freshness: "live",
+        fetchedAt: new Date().toISOString(),
+        attribution: this.attribution,
+      },
+    };
+  }
 
   async fetchRuns(now = Date.now()): Promise<ProviderResult<DispersionRun[]>> {
     const catalogue = await imoFetchJson<unknown>({

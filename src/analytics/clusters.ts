@@ -251,6 +251,16 @@ export type ActivityObservation = {
   context?: string;
   /** Where to fly the map, when the observation has a location. */
   focus?: { centre: LatLon; radiusKm: number };
+  /**
+   * The period the observation's own sentence is about, as ISO instants.
+   *
+   * Deliberately the period the *sentence* describes rather than the extent
+   * of `eventIds`: a rate change carries no events at all, and the repeated
+   * moderate events are counted over the whole window even though they
+   * cluster inside it. Drawn as a band under the charts, a span that
+   * disagreed with the text above it would be its own small lie.
+   */
+  span: { from: string; to: string };
   /** Ids of the events the observation is derived from. */
   eventIds: string[];
 };
@@ -367,6 +377,8 @@ export function detectObservations({
         (baseline ? ` ${baselineMethod(baseline)}` : ""),
       ...(baseline ? { context: describeBaseline(baseline) } : {}),
       focus: { centre: cluster.centre, radiusKm: cluster.radiusKm },
+      // "over N hours" in the sentence above is exactly this.
+      span: { from: cluster.earliestAt, to: cluster.latestAt },
       eventIds: cluster.events.map((event) => event.id),
     });
 
@@ -381,6 +393,8 @@ export function detectObservations({
         detail: `${moderate.length} earthquakes of magnitude ${MODERATE_MAGNITUDE.toFixed(1)} or greater occurred within ${formatKm(cluster.radiusKm)} of ${place} over ${formatHours(windowHours)}.`,
         method: `Count of events at or above magnitude ${MODERATE_MAGNITUDE.toFixed(1)} inside a detected cluster; reported at ${MODERATE_MIN_EVENTS} events or more.`,
         focus: { centre: cluster.centre, radiusKm: cluster.radiusKm },
+        // Counted over the whole window, which is what its sentence says.
+        span: { from: effectiveFrom.toISOString(), to: to.toISOString() },
         eventIds: moderate.map((event) => event.id),
       });
     }
@@ -427,6 +441,8 @@ function detectRateChange(
     headline: "Increased earthquake frequency",
     detail: `${recent} earthquakes were recorded in the most recent ${formatHours(recentHours)}, about ${factor.toFixed(1)}× the rate of the preceding ${formatHours(baselineHours)}.`,
     method: `Events per hour in the most recent third of the window compared with the earlier two thirds; reported at ${RATE_RATIO}× or more, with at least ${RATE_MIN_RECENT_EVENTS} recent and ${RATE_MIN_BASELINE_EVENTS} baseline events.`,
+    // The recent third — the period the observation is a statement about.
+    span: { from: new Date(splitMs).toISOString(), to: to.toISOString() },
     eventIds: [],
   };
 }

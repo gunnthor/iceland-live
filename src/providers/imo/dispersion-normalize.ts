@@ -18,8 +18,10 @@ import type {
   DispersionHazard,
   DispersionLayer,
   DispersionModel,
+  DispersionPointSeries,
   DispersionRun,
 } from "@/domain/dispersion";
+import { parseSeriesLayer, unitFor } from "@/domain/dispersion";
 
 /** What the EPOS catalogue tells us about one published run. */
 export type CatalogueEntry = {
@@ -274,4 +276,51 @@ export function latestPerScenario(entries: readonly CatalogueEntry[]): Catalogue
   }
 
   return [...newest.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+/**
+ * Reads the per-location graph payload: `[{ name, x: [...], y: [...] }]`.
+ *
+ * The two arrays are parallel and are zipped here rather than passed along,
+ * because a payload where they disagree in length is a payload whose values
+ * are attached to the wrong hours — better to drop the trailing mismatch than
+ * to plot it.
+ *
+ * Nulls in `y` are holes, not zeros, and are dropped. Zeros are kept: inside
+ * the model grid, "nothing here at this hour" is a result.
+ *
+ * Note the x-axis convention differs between products — a 24-hour tephra run
+ * starts an hour after its `start_time` while a 72-hour gas run starts at it —
+ * so the returned times are used as given and never reconstructed.
+ */
+export function normalizePointSeries(payload: unknown): DispersionPointSeries[] {
+  if (!Array.isArray(payload)) return [];
+
+  const series: DispersionPointSeries[] = [];
+
+  for (const item of payload) {
+    if (!item || typeof item !== "object") continue;
+    const raw = item as { name?: unknown; x?: unknown; y?: unknown };
+
+    const name = str(raw.name);
+    if (!name || !Array.isArray(raw.x) || !Array.isArray(raw.y)) continue;
+
+    const layer = parseSeriesLayer(name);
+    if (!layer) continue;
+
+    const points: DispersionPointSeries["points"] = [];
+    const length = Math.min(raw.x.length, raw.y.length);
+    for (let index = 0; index < length; index += 1) {
+      const at = toIso(raw.x[index]);
+      const value = num(raw.y[index]);
+      if (!at || value === null || value < 0) continue;
+      points.push({ at, value });
+    }
+    if (points.length === 0) continue;
+
+    points.sort((a, b) => a.at.localeCompare(b.at));
+    series.push({ name, layer, unit: unitFor(layer.dispersionType), points });
+  }
+
+  return series;
 }

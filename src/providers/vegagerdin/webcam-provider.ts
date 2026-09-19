@@ -37,6 +37,33 @@ export function toWebcamReelUrl(publishedUrl: string): string {
   return `/api/webcams/reel?src=${encodeURIComponent(publishedUrl)}`;
 }
 
+const IMAGE_EXTENSIONS = /\.(jpe?g|png)$/i;
+
+/**
+ * The single gate every camera fetch passes through.
+ *
+ * The image proxy, the reel endpoint and the background recorder all need the
+ * same answer to "is this a camera we serve", and they all need to derive the
+ * same storage key from it. Three copies of an allowlist is how one of them
+ * ends up permitting a host the others do not, so there is one.
+ *
+ * Returning the parsed `URL` rather than a boolean is deliberate: callers hash
+ * `url.toString()`, and hashing the caller's raw string instead would key the
+ * same camera differently depending on who asked.
+ */
+export function allowWebcamSource(raw: string): URL | null {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:") return null;
+  if (url.hostname !== IRCA_IMAGE_HOST) return null;
+  if (!IMAGE_EXTENSIONS.test(url.pathname)) return null;
+  return url;
+}
+
 type RawCamera = {
   Maelist_nr?: unknown;
   Myndavel?: unknown;
@@ -95,6 +122,7 @@ export function normalizeWebcams(payload: unknown): WebcamSite[] {
     const view: WebcamView = {
       id: `${id}-${image.split("/").pop() ?? site.views.length}`,
       description: str(raw.Skyring) ?? name,
+      sourceUrl: image,
       imageUrl: toWebcamProxyUrl(image),
       reelUrl: toWebcamReelUrl(image),
     };

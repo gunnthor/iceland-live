@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ActivityObservation } from "@/analytics/clusters";
 import type { Histogram, TimeBin } from "@/analytics/histogram";
+import { ObservationBands, bandsFor, describeBands } from "./ObservationBands";
 import type { Earthquake } from "@/domain/earthquake";
 import type { TimeRangeId } from "@/domain/time-range";
 import { cn, formatCount, formatMagnitudeValue } from "@/lib/format";
@@ -52,6 +54,7 @@ export function Timeline({
   histogram,
   quakes,
   range,
+  observations,
   selectedId,
   onSelect,
   className,
@@ -59,6 +62,8 @@ export function Timeline({
   histogram: Histogram;
   quakes: readonly Earthquake[];
   range: TimeRangeId;
+  /** Drawn as shaded periods behind the bars. */
+  observations: readonly ActivityObservation[];
   selectedId: string | null;
   onSelect: (id: string) => void;
   className?: string;
@@ -125,6 +130,11 @@ export function Timeline({
 
   const ticks = width > 0 ? tickIndices(bins.length, width) : [];
 
+  const bands = useMemo(
+    () => bandsFor(observations, histogram.fromMs, histogram.toMs),
+    [observations, histogram.fromMs, histogram.toMs],
+  );
+
   return (
     <div className={cn("select-none", className)}>
       <div className="mb-1.5 flex items-baseline justify-between px-0.5">
@@ -155,10 +165,26 @@ export function Timeline({
             width={width}
             height={HEIGHT + AXIS_HEIGHT}
             role="img"
-            aria-label={`Earthquake counts over ${bins.length} intervals. Peak ${histogram.peakCount} events in one interval.`}
+            aria-label={
+              `Earthquake counts over ${bins.length} intervals. ` +
+              `Peak ${histogram.peakCount} events in one interval.` +
+              describeBands(bands, formatDayClock)
+            }
             onMouseLeave={() => setHovered(null)}
             className="overflow-visible"
           >
+            {/*
+              Behind everything: the bands are context for the bars, and a
+              wash drawn over them would dim the data it is explaining.
+            */}
+            <ObservationBands
+              bands={bands}
+              fromMs={histogram.fromMs}
+              toMs={histogram.toMs}
+              width={width}
+              height={HEIGHT}
+            />
+
             {/* Baseline */}
             <line
               x1={0}

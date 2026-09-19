@@ -3,13 +3,23 @@ import {
   latestPerScenario,
   mergeRun,
   normalizeCatalogue,
+  normalizePointSeries,
   normalizeSimulation,
   runIdFromReference,
   hasRealSource,
   toIso,
   type CatalogueEntry,
 } from "./dispersion-normalize";
-import { defaultLayer, frameTimes, legendFor, toRasterTime } from "@/domain/dispersion";
+import {
+  defaultLayer,
+  frameTimes,
+  legendFor,
+  parseSeriesLayer,
+  peakOf,
+  toRasterTime,
+  unitFor,
+  withinBounds,
+} from "@/domain/dispersion";
 
 const UUID = "574685b2-b2b8-4f00-9423-d25bbdb57cc0";
 
@@ -344,5 +354,152 @@ describe("layer choice and legends", () => {
   it("uses the CALPUFF scale for a gas run", () => {
     const gas = { ...run, model: "CALPUFF" as const, hazard: "gas" as const };
     expect(legendFor(gas, gas.layers[0]!)[0]?.label).toContain("µg/m³");
+  });
+});
+
+describe("parseSeriesLayer", () => {
+  it("reads the two shapes IMO publishes", () => {
+    expect(parseSeriesLayer("5m Ash g/m3")).toEqual({
+      dispersionType: "Ash g/m3",
+      altitude: 5,
+      altitudeUnit: "m",
+    });
+    expect(parseSeriesLayer("300hPa Ash g/m3")).toEqual({
+      dispersionType: "Ash g/m3",
+      altitude: 300,
+      altitudeUnit: "hPa",
+    });
+    expect(parseSeriesLayer("0m SO2")).toEqual({
+      dispersionType: "SO2",
+      altitude: 0,
+      altitudeUnit: "m",
+    });
+  });
+
+  it("returns null rather than guessing at an unfamiliar name", () => {
+    // Parsed rather than reconstructed and compared, so a change in IMO's
+    // format loses one series instead of mislabelling all of them.
+    expect(parseSeriesLayer("Ash g/m3")).toBeNull();
+    expect(parseSeriesLayer("5km Ash g/m3")).toBeNull();
+    expect(parseSeriesLayer("")).toBeNull();
+  });
+});
+
+describe("unitFor", () => {
+  it("takes the unit from the type where the type carries one", () => {
+    expect(unitFor("Ash kg/m2")).toBe("kg/m\u00b2");
+    expect(unitFor("Ash g/m3")).toBe("g/m\u00b3");
+  });
+
+  it("falls back to IMO's own CALPUFF scale for the gas species", () => {
+    // The EPOS catalogue reports µg/m³ for the tephra products too, which
+    // contradicts their series names, so it is not the source used here.
+    expect(unitFor("SO2")).toBe("\u00b5g/m\u00b3");
+    expect(unitFor("SO4")).toBe("\u00b5g/m\u00b3");
+  });
+});
+
+describe("withinBounds", () => {
+  const bounds = { west: -40, south: 60, east: -0.03, north: 72.95 };
+
+  it("accepts a point inside the grid", () => {
+    expect(withinBounds(bounds, { latitude: 64.1, longitude: -21.9 })).toBe(true);
+  });
+
+  it("rejects a point outside it", () => {
+    // Outside the grid the service answers 200 with zeros, so "not modelled"
+    // would otherwise arrive looking like "nothing will reach here".
+    expect(withinBounds(bounds, { latitude: -33.9, longitude: 151.2 })).toBe(false);
+    expect(withinBounds(bounds, { latitude: 59.9, longitude: -21.9 })).toBe(false);
+  });
+});
+
+describe("normalizePointSeries", () => {
+  const payload = [
+    {
+      name: "5m Ash g/m3",
+      x: ["2026-09-19T13:00:00", "2026-09-19T14:00:00", "2026-09-19T15:00:00"],
+      y: [0, 1.5, 2.25],
+    },
+    {
+      name: "0m Ash kg/m2",
+      x: ["2026-09-19T13:00:00", "2026-09-19T14:00:00"],
+      y: [0.1, 0.2],
+    },
+  ];
+
+  it("zips the parallel arrays into points", () => {
+    const series = normalizePointSeries(payload);
+    expect(series).toHaveLength(2);
+    expect(series[0]?.points).toEqual([
+      { at: "2026-09-19T13:00:00.000Z", value: 0 },
+      { at: "2026-09-19T14:00:00.000Z", value: 1.5 },
+      { at: "2026-09-19T15:00:00.000Z", value: 2.25 },
+    ]);
+    expect(series[0]?.unit).toBe("g/m\u00b3");
+    expect(series[0]?.layer.altitude).toBe(5);
+  });
+
+  it("keeps zeros and drops nulls", () => {
+    // Inside the grid, "nothing here at this hour" is a result; a null is a
+    // hole in the output and is not a result.
+    const series = normalizePointSeries([
+      { name: "5m Ash g/m3", x: ["2026-09-19T13:00:00", "2026-09-19T14:00:00"], y: [0, null] },
+    ]);
+    expect(series[0]?.points).toEqual([{ at: "2026-09-19T13:00:00.000Z", value: 0 }]);
+  });
+
+  it("drops the trailing mismatch when the arrays disagree in length", () => {
+    // Past the shorter array the values would be attached to the wrong hours.
+    const series = normalizePointSeries([
+      {
+        name: "5m Ash g/m3",
+        x: ["2026-09-19T13:00:00", "2026-09-19T14:00:00", "2026-09-19T15:00:00"],
+        y: [1, 2],
+      },
+    ]);
+    expect(series[0]?.points).toHaveLength(2);
+  });
+
+  it("uses the times as given rather than reconstructing them", () => {
+    // A 24-hour tephra run starts an hour after its start_time while a
+    // 72-hour gas run starts at it, so there is no rule to reconstruct from.
+    const gas = normalizePointSeries([
+      { name: "0m SO2", x: ["2025-09-18T00:00:00", "2025-09-18T01:00:00"], y: [0.5, 0.7] },
+    ]);
+    expect(gas[0]?.points[0]?.at).toBe("2025-09-18T00:00:00.000Z");
+    expect(gas[0]?.unit).toBe("\u00b5g/m\u00b3");
+  });
+
+  it("skips a series whose name it cannot place", () => {
+    expect(normalizePointSeries([{ name: "mystery", x: ["a"], y: [1] }])).toEqual([]);
+  });
+
+  it("survives a payload that is not a list of series", () => {
+    expect(normalizePointSeries(null)).toEqual([]);
+    expect(normalizePointSeries({ detail: "No graph data found" })).toEqual([]);
+    expect(normalizePointSeries([{ name: "5m Ash g/m3" }])).toEqual([]);
+  });
+});
+
+describe("peakOf", () => {
+  const series = normalizePointSeries([
+    {
+      name: "5m Ash g/m3",
+      x: ["2026-09-19T13:00:00", "2026-09-19T14:00:00", "2026-09-19T15:00:00"],
+      y: [0, 2.25, 1.5],
+    },
+  ])[0]!;
+
+  it("finds the highest value and when it happens", () => {
+    expect(peakOf(series)).toEqual({ at: "2026-09-19T14:00:00.000Z", value: 2.25 });
+  });
+
+  it("returns null when the model puts nothing here", () => {
+    // Inside the grid that is a real answer, and "peak 0 at 13:00" would not be.
+    const flat = normalizePointSeries([
+      { name: "5m Ash g/m3", x: ["2026-09-19T13:00:00", "2026-09-19T14:00:00"], y: [0, 0] },
+    ])[0]!;
+    expect(peakOf(flat)).toBeNull();
   });
 });

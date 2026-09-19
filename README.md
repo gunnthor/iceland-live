@@ -84,11 +84,16 @@ not built yet.
 - **Air on the earthquake timeline** — the selected station's series drawn under
   the activity histogram on exactly the same x-axis, so a gas episode and a swarm
   can be read against one another. Shown together, never correlated.
+- **Observation periods on both charts** — the stretch each observation's sentence
+  is about, marked on the histogram and on the air trace at identical extents, so
+  "over 8 hours" is a thing you can see rather than reconstruct from two clocks.
 - **Dispersal simulations** — IMO's tephra and SO₂ dispersal runs, the raster laid
   over the map in Web Mercator with IMO's own colour scale, steppable hour by hour
-  across the forecast window. **These model eruptions that are not happening**: IMO
-  produces them several times a day for selected volcanoes so the answer exists if
-  one ever starts, and the panel says so before it lists anything.
+  across the forecast window, and evaluable at any monitoring station — IMO's own
+  numbers at that coordinate, beside what the instrument there is actually
+  measuring. **These model eruptions that are not happening**: IMO produces them
+  several times a day for selected volcanoes so the answer exists if one ever
+  starts, and the panel says so before it lists anything.
 - **Quick-focus viewpoints** for Iceland, Reykjanes and Grindavík.
 - **Shareable URLs** — `?range=7d&event=<id>&volcanoes=1&reykjanes=1&deformation=1&cams=1&air=1&plume=1&insar=<id>&run=<uuid>`.
 
@@ -477,8 +482,45 @@ result.
 
 Keys are a SHA-256 prefix of the source URL, so nothing a caller sends names a
 path; `/api/webcams/frame` additionally checks a frame is indexed before
-touching the disk, and `/api/webcams/reel` puts `src` through the image
-proxy's allowlist before hashing it.
+touching the disk. The allowlist and the key derivation live in one place
+(`allowWebcamSource`), used by the proxy, the reel endpoint and the recorder —
+three copies of an allowlist is how one of them ends up permitting a host the
+others do not, and three copies of a key derivation is how the same camera
+gets filed under two keys.
+
+**Recording without a reader** (`src/server/camera-recorder.ts`). Frames
+arriving only while somebody is watching has the timing exactly backwards:
+nobody has a camera open for the hour *before* something happens. A small
+watch list is therefore polled on a schedule.
+
+Which cameras is *derived*, not listed. A hard-coded set of identifiers would
+be a guess frozen at the moment it was written — Vegagerðin renumbers and
+retires cameras, and the interesting part of Iceland moves. The watch list is
+the sites nearest wherever the seismicity currently is, computed from the same
+region tally the interface ranks by, so a Reykjanes swarm watches Reykjanes
+and a Norðurland swarm watches Norðurland with nothing to maintain. Four sites,
+twelve views maximum, four requests in flight; under half a megabyte a run.
+
+Two ways to drive it, both calling the same function:
+
+| | how | when |
+|---|---|---|
+| `GET /api/cron/cameras` | any scheduler that can make an authenticated GET — Vercel Cron, GitHub Actions, a crontab | serverless, where there is no process between requests |
+| `ICELAND_LIVE_CAMERA_RECORDER=1` | an in-process timer started from `src/instrumentation.ts` | a VPS, a container, anything long-running |
+
+The endpoint takes a bearer token from `CRON_SECRET`, which is the convention
+Vercel Cron sends. With the secret unset it refuses in production and allows
+in development, the same way `ALLOW_FIXTURES_IN_PRODUCTION` is handled: a
+misconfigured deployment should fail closed. The ticker is clamped to a
+minimum of 60 seconds, because the cameras do not publish faster than that.
+
+No `vercel.json` cron is committed. Hobby accounts are limited to daily
+invocations, and a schedule the plan rejects would fail the deploy rather than
+the feature — so the schedule is left as a deployment decision:
+
+```json
+{ "crons": [{ "path": "/api/cron/cameras", "schedule": "*/5 * * * *" }] }
+```
 
 Míla's volcano livestreams are real video but are published through YouTube with
 no machine-readable listing, and their stream identifiers change between
@@ -587,6 +629,32 @@ viewer ships (12 steps for NAME, 6 for CALPUFF). A colour-to-concentration
 mapping invented here would turn a picture into a number we have no basis for,
 so each run also links to IMO's viewer.
 
+**Asking the model rather than reading the picture.** The same service will
+evaluate a run at a coordinate and return an hourly series
+(`/graphs/location/uuid/…`), which is how "what would this scenario put in the
+air over Grindavík" gets answered with IMO's numbers instead of by sampling
+pixels and guessing at a scale. The panel does this at the monitoring station
+nearest the modelled source, and puts the station's actual current readings
+next to the curve — not on the same axes, because a model of an eruption that
+is not happening and a measurement of the air as it is are not two versions of
+one quantity.
+
+Three things about that endpoint are worth writing down:
+
+- Outside the model grid it answers **200 with zeros**, not 404, so "not
+  modelled" would arrive looking like "nothing will reach here". The server
+  checks the point against the run's own bounds and refuses rather than
+  passing that on.
+- The x-axis convention **differs by product**: a 24-hour tephra run's series
+  begins an hour after its `start_time`, a 72-hour gas run's begins at it. The
+  returned times are used as given and never reconstructed.
+- The series names carry their units — `5m Ash g/m3`, `0m SO2` — and are
+  parsed rather than rebuilt and compared, so a change in IMO's formatting
+  loses one series instead of mislabelling all of them. For the gas species,
+  which name no unit, the unit comes from IMO's CALPUFF legend (µg/m³) and
+  *not* from the EPOS catalogue's `units` field, which reports µg/m³ for the
+  tephra products too and so contradicts their own series names.
+
 **Gas runs have not been produced since 18 September 2025.** The CALPUFF SO₂
 scenarios ran daily through the Sundhnúkur eruption series and stop there; every
 current run is tephra (NAME). The code handles both identically and the panel
@@ -652,7 +720,8 @@ src/
 │   ├── region-history.ts  the year that baselines compare against
 │   ├── disk-cache.ts    best-effort accelerator for expensive derived data
 │   ├── frame-store.ts   bounded disk-backed reel of camera frames
-│   ├── dispersion.ts    current dispersal runs
+│   ├── camera-recorder.ts  polls a derived watch list on a schedule
+│   ├── dispersion.ts    current dispersal runs and per-location series
 │   ├── environment.ts   air quality + roads
 │   └── webcams.ts
 │
@@ -668,19 +737,21 @@ src/
 │   └── api/             /api/earthquakes[/:id] · /api/alerts · /api/volcanoes
 │                        /api/reykjanes · /api/insar[/image]
 │                        /api/webcams[/image|/reel|/frame] · /api/environment
-│                        /api/dispersion[/raster]
+│                        /api/dispersion[/raster|/point] · /api/cron/cameras
 │
 ├── components/
 │   ├── map/             MapView, base-style tuning, layer specs, GeoJSON builders
 │   ├── charts/          Timeline · DepthProfile · Sparkline · AirTrace
+│   │                    ObservationBands (shared by Timeline and AirTrace)
 │   ├── ui/              Panels, feed, detail, controls, states
 │   └── AppShell.tsx     Orchestration and layout
 │
 ├── hooks/           useEarthquakeData · useEarthquakeDetail · useAlerts
 │                  useReykjanesLayer · useDeformation · useWebcams
-│                  useEnvironment · useDispersion · useUrlState · useNow
-│                  useMediaQuery
-└── lib/             time · format · geo · simplify
+│                  useEnvironment · useDispersion · useDispersionPoint
+│                  useUrlState · useNow · useMediaQuery
+├── lib/             time · format · geo · simplify
+└── instrumentation.ts   starts the in-process camera recorder, if enabled
 ```
 
 The dependency rule runs one way: `app` → `components` → `hooks` → `analytics` →
@@ -763,6 +834,8 @@ on screen instead of an empty map. Concurrent callers share one in-flight fetch.
 | `/api/webcams/frame` | `max-age=3600, immutable` | — (one picture, one instant) |
 | `/api/dispersion` | `s-maxage=900, swr=3600` | 15min / 6h |
 | `/api/dispersion/raster` | `max-age=31536000, immutable` | — (proxied, immutable) |
+| `/api/dispersion/point` | `s-maxage=3600, swr=21600` | 1h / 6h, 400-entry LRU |
+| `/api/cron/cameras` | `no-store` | — (a trigger, not a read) |
 | `/api/environment` | `s-maxage=300, swr=900` | 5min / 1h |
 
 The year of region history is cached separately for 24 hours and kept for a
@@ -922,10 +995,22 @@ the code is written to make that hard to forget.
   declines to claim either — and points the reader at IMO's aviation colour
   codes and warnings for the thing these products cannot tell them.
 - **Two series on one axis are not a correlation.** The air trace shares the
-  earthquake timeline's clock so a reader can see a gas episode against a swarm.
-  No correlation is computed and none is implied; the caption says the two are
+  earthquake timeline's clock so a reader can see a gas episode against a swarm,
+  and the observation periods are marked on both at identical extents. No
+  correlation is computed and none is implied; the caption says the two are
   shown together, not compared, and the station's classification stays on screen
   because a still day over a busy road moves these numbers too.
+- **A model and an instrument are not two readings of one quantity.** The
+  station probe puts IMO's modelled concentration beside what that station is
+  actually measuring, and deliberately not on shared axes — the model is mostly
+  in the future and describes an eruption that is not occurring, the reading is
+  the last hour of real air. Shared axes invite subtraction, and there is
+  nothing here to subtract. The model gets a curve, the measurement gets a
+  number, each labelled for what it is.
+- **A band marks a period, not a claim about it.** The shaded stretches under
+  the charts are the periods the observations' own sentences describe, clipped
+  to what is on screen. Two things overlapping in time is not evidence that one
+  caused the other.
 - **Missing is not zero.** A depth of `0 km` and an unreported depth are different
   facts and render differently (`0.0 km` versus `—`).
 - **No activity index.** A LOW/MODERATE/ELEVATED/HIGH badge is on the roadmap only as
@@ -1024,11 +1109,27 @@ that is where upstream reality meets our assumptions.
   and the viewer polls every two minutes, so it both misses frames on the fast
   cameras and re-fetches pictures it already has from the slow ones. The
   repeats are recognised and discarded rather than stored.
-- **A camera's reel is only as long as someone was watching.** The server keeps
-  what it has fetched, so a camera nobody has opened has one frame. A short reel
-  means a lack of attention, not a camera fault, and the viewer says so. The
-  store is also per instance and not durable, so two readers may see different
-  reels.
+- **A camera's reel is only as long as someone was watching, or the recorder
+  was pointed at it.** The server keeps what it has fetched. The scheduled
+  recorder covers the four sites nearest the current seismicity; every other
+  camera has only what readers have opened, so a short reel means a lack of
+  attention rather than a camera fault, and the viewer says so. The store is
+  also per instance and not durable, so two readers may see different reels.
+- **The recorder follows earthquakes, which is not the same as following
+  risk.** The watch list is the cameras nearest the busiest seismic region. On
+  a day when the seismicity is in the north and the thing worth watching is a
+  road on Reykjanes, it will be pointed at the wrong end of the country.
+  Deriving the list is still better than freezing one, but it is a proxy.
+- **The dispersal point series is the model, not the air.** It is what IMO's
+  simulation puts at a coordinate for a scenario, and on almost every day that
+  scenario is an eruption that is not happening. The measured readings shown
+  beside it are the only actual observation in that panel.
+- **Observation bands are clipped, and one is suppressed.** A period starting
+  before the window is drawn from the window's edge, so the band shows the
+  visible part rather than the whole. A period covering the entire window —
+  which "repeated M2.0+ events" always does, because that is what it counts
+  over — gets no band at all, since a wash over every bar distinguishes
+  nothing.
 - **A dispersal run is a scenario, not a prediction.** Every one of them models
   an eruption that is, on almost every day, not happening. Nothing published
   distinguishes a contingency run from one produced for a real event, so this
@@ -1075,23 +1176,23 @@ that is where upstream reality meets our assumptions.
 
 **Next up**
 
-1. **A recorder for the cameras that matter, not just the ones being watched.**
-   The frame store fills only while somebody has a camera open, which is
-   honest but leaves the Reykjanes cameras blank at exactly the moment the
-   first person arrives. A scheduled job polling a short, named list — the
-   Grindavíkurvegur, Suðurstrandarvegur and Krýsuvíkurvegur views — would mean
-   the reel is already there. Needs a cron and durable storage, so it is a
-   deployment change as much as a code one.
-2. **Gas dispersal, when IMO resumes it.** Every current run is tephra; the
-   CALPUFF SO₂ scenarios stopped in September 2025. The code path already
-   handles them, but the interface is built around ash: pairing a gas raster
-   with the ground stations already on the map — model beside measurement, both
-   labelled — is the version of this feature that answers a question people
-   actually ask.
-3. **Observations on the air trace.** The trace shares the timeline's clock but
-   nothing marks where the statistical observations fall on it. Drawing the
-   observation windows as shaded bands under both charts would let a reader see
-   a gas episode and a swarm line up, without any claim that they are related.
+1. **A watch list that follows hazard, not only seismicity.** The recorder
+   points at the cameras nearest the busiest seismic region, which is a proxy
+   and sometimes the wrong one — an official warning area or an aviation
+   colour code at orange says more about where to look than an earthquake
+   count does. Both are already fetched; combining them into the watch list is
+   a scoring question, and the scoring has to stay explainable.
+2. **Durable frames.** The store is per instance and capped at six hours, so
+   the reel a reader sees depends on which server answered. Object storage
+   behind the same interface would make "what did that camera see last night"
+   a question with one answer. It is the first thing here that would need
+   infrastructure rather than code.
+3. **Deposit against exposure.** A tephra run's ground-deposit layer is the
+   one with consequences for roads and airports, and it is currently just
+   another layer in the picker. Read at the point of each road-weather station
+   already on the map, it would say which routes a scenario puts under ash —
+   still a scenario, still IMO's numbers, but answering the question the
+   cameras and the road conditions are already about.
 
 **Later**
 

@@ -21,30 +21,15 @@
  */
 
 import { NextResponse } from "next/server";
-import { IRCA_IMAGE_HOST } from "@/providers/vegagerdin/webcam-provider";
+import { allowWebcamSource } from "@/providers/vegagerdin/webcam-provider";
 import { readReel, viewKeyFor } from "@/server/frame-store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const IMAGE_EXTENSIONS = /\.(jpe?g|png)$/i;
-
-function isAllowed(raw: string): URL | null {
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    return null;
-  }
-  if (url.protocol !== "https:") return null;
-  if (url.hostname !== IRCA_IMAGE_HOST) return null;
-  if (!IMAGE_EXTENSIONS.test(url.pathname)) return null;
-  return url;
-}
-
 export async function GET(request: Request): Promise<NextResponse> {
   const src = new URL(request.url).searchParams.get("src");
-  const target = src ? isAllowed(src) : null;
+  const target = src ? allowWebcamSource(src) : null;
 
   if (!target) {
     return NextResponse.json(

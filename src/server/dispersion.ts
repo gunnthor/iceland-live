@@ -10,7 +10,8 @@
  * they are just no longer being refreshed.
  */
 
-import type { DispersionRun } from "@/domain/dispersion";
+import type { DispersionPointSeries } from "@/domain/dispersion";
+import { withinBounds, type DispersionRun } from "@/domain/dispersion";
 import { ImoDispersionProvider } from "@/providers/imo/dispersion-provider";
 import { ProviderError, type ProviderMeta } from "@/providers/types";
 import { TtlCache } from "./cache";
@@ -65,5 +66,73 @@ export async function getDispersionRuns(): Promise<DispersionSnapshot> {
       runs: stillCurrent,
       meta: { ...usable.value.meta, freshness: "stale", degradedReason: reason },
     };
+  }
+}
+
+/**
+ * Modelled series at one place, cached.
+ *
+ * Keyed by run and rounded coordinates. Three decimals is about 100 m, well
+ * inside the model's own grid spacing, so rounding costs no resolution and
+ * turns a stream of near-identical probes into one upstream request.
+ *
+ * Size-capped as well as time-capped: the key includes a coordinate, so it is
+ * unbounded in a way the other caches here are not.
+ */
+const POINT_TTL_MS = 60 * 60_000;
+const POINT_MAX_STALE_MS = 6 * 60 * 60_000;
+const POINT_MAX_ENTRIES = 400;
+
+const pointCache = new TtlCache<DispersionPointSeries[]>(
+  POINT_TTL_MS,
+  POINT_MAX_STALE_MS,
+  POINT_MAX_ENTRIES,
+);
+
+export type PointLookup =
+  | { ok: true; run: DispersionRun; series: DispersionPointSeries[] }
+  | { ok: false; reason: "unknown-run" | "outside-grid" | "unavailable" };
+
+export async function getDispersionPoint(
+  runId: string,
+  latitude: number,
+  longitude: number,
+): Promise<PointLookup> {
+  let run: DispersionRun | undefined;
+  try {
+    run = (await getDispersionRuns()).runs.find((item) => item.id === runId);
+  } catch {
+    return { ok: false, reason: "unavailable" };
+  }
+
+  // Only runs we are currently serving. Relaying an arbitrary UUID would make
+  // this a general-purpose proxy for someone else's service.
+  if (!run) return { ok: false, reason: "unknown-run" };
+
+  /*
+   * Outside the grid the service answers 200 with zeros, which would read as
+   * "the model says nothing will reach here" when the truth is "this place was
+   * never modelled". Refused rather than passed on.
+   */
+  if (!withinBounds(run.bounds, { latitude, longitude })) {
+    return { ok: false, reason: "outside-grid" };
+  }
+
+  const lat = Math.round(latitude * 1000) / 1000;
+  const lon = Math.round(longitude * 1000) / 1000;
+  const key = `${runId}:${lat}:${lon}`;
+
+  const fresh = pointCache.getFresh(key);
+  if (fresh) return { ok: true, run, series: fresh.value };
+
+  try {
+    const result = await provider.fetchPointSeries(runId, lat, lon);
+    pointCache.set(key, result.data);
+    return { ok: true, run, series: result.data };
+  } catch (error) {
+    const usable = pointCache.getUsable(key);
+    if (usable) return { ok: true, run, series: usable.value };
+    console.warn(`[dispersion] point lookup failed for ${runId}`, error);
+    return { ok: false, reason: "unavailable" };
   }
 }

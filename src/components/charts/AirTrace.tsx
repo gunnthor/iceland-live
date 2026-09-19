@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ActivityObservation } from "@/analytics/clusters";
+import { ObservationBands, bandsFor, describeBands } from "./ObservationBands";
 import {
   HEADLINE_POLLUTANTS,
   trendOf,
@@ -8,7 +10,7 @@ import {
   type Reading,
 } from "@/domain/air-quality";
 import { cn } from "@/lib/format";
-import { formatClock } from "@/lib/time";
+import { formatClock, formatDayClock } from "@/lib/time";
 
 /**
  * An air quality trace on the earthquake timeline's own clock.
@@ -171,6 +173,7 @@ export function AirTrace({
   stations,
   fromMs,
   toMs,
+  observations,
   selected,
   onSelect,
   className,
@@ -179,6 +182,14 @@ export function AirTrace({
   /** The timeline's window, so both charts share one x-axis exactly. */
   fromMs: number;
   toMs: number;
+  /**
+   * The same periods the histogram above shades.
+   *
+   * This is the reason the two charts share an axis at all: whether a gas
+   * episode falls inside the period an observation describes is a thing to
+   * be looked at, not a thing to be worked out from two clocks.
+   */
+  observations: readonly ActivityObservation[];
   selected: TraceChoice | null;
   onSelect: (choice: TraceChoice) => void;
   className?: string;
@@ -229,6 +240,7 @@ export function AirTrace({
    * window" for a frame at every range the chart handles perfectly well.
    */
   const enough = visible.length >= MIN_VISIBLE_POINTS && toMs - fromMs <= MAX_WINDOW_MS;
+  const bands = bandsFor(observations, fromMs, toMs);
   const peak = enough ? Math.max(...visible.map((point) => point.value)) : null;
 
   return (
@@ -285,9 +297,28 @@ export function AirTrace({
           width={width}
           height={HEIGHT}
           role="img"
-          aria-label={`${formatPollutant(chosen.pollutant)} at ${chosen.station.name} over the same period, on a scale from zero to ${peak} ${chosen.reading.unit}. Latest ${chosen.reading.value} ${chosen.reading.unit}, ${trend}.`}
+          aria-label={
+            `${formatPollutant(chosen.pollutant)} at ${chosen.station.name} over the same period, ` +
+            `on a scale from zero to ${peak} ${chosen.reading.unit}. ` +
+            `Latest ${chosen.reading.value} ${chosen.reading.unit}, ${trend}.` +
+            describeBands(bands, formatDayClock)
+          }
           className="overflow-visible"
         >
+          {/*
+            Same projection as the histogram, so the two line up exactly —
+            and the same baseline marker, because that pair of segments at
+            identical extents is what makes the alignment readable. A wash
+            alone is too faint to find on a 26px strip, which is the whole
+            reason the two charts share an axis.
+          */}
+          <ObservationBands
+            bands={bands}
+            fromMs={fromMs}
+            toMs={toMs}
+            width={width}
+            height={HEIGHT}
+          />
           <line
             x1={0}
             y1={HEIGHT}
