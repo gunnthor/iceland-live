@@ -74,6 +74,38 @@ describe("TtlCache", () => {
     expect(cache.getFresh("b")?.value).toBe("B");
   });
 
+  it("evicts the oldest entry once it is full", () => {
+    // Detail is keyed by event id, which is unbounded; without this the cache
+    // would grow with every distinct event anyone ever opens.
+    const cache = new TtlCache<string>(60_000, 60_000, 3);
+    cache.set("a", "A");
+    cache.set("b", "B");
+    cache.set("c", "C");
+    cache.set("d", "D");
+
+    expect(cache.size).toBe(3);
+    expect(cache.getUsable("a")).toBeNull();
+    expect(cache.getUsable("d")?.value).toBe("D");
+  });
+
+  it("treats a refreshed entry as recently used, not as the next to evict", () => {
+    const cache = new TtlCache<string>(60_000, 60_000, 3);
+    cache.set("a", "A");
+    cache.set("b", "B");
+    cache.set("c", "C");
+    cache.set("a", "A2");   // refresh the oldest
+    cache.set("d", "D");    // should evict "b", not "a"
+
+    expect(cache.getUsable("a")?.value).toBe("A2");
+    expect(cache.getUsable("b")).toBeNull();
+  });
+
+  it("is unbounded by default", () => {
+    const cache = new TtlCache<string>(60_000);
+    for (let i = 0; i < 50; i += 1) cache.set(`k${i}`, `v${i}`);
+    expect(cache.size).toBe(50);
+  });
+
   it("clears everything", () => {
     const cache = new TtlCache<string>(1000);
     cache.set("k", "value");

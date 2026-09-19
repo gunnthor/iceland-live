@@ -10,6 +10,7 @@ import type { Histogram } from "@/analytics/histogram";
 import type { EarthquakeStats } from "@/analytics/stats";
 import type { Summary } from "@/analytics/summary";
 import type { Earthquake } from "./earthquake";
+import type { EarthquakeDetail } from "./earthquake-detail";
 import type { TimeRangeId } from "./time-range";
 import type { VolcanicSystem } from "./volcano";
 import type { ProviderMeta } from "@/providers/types";
@@ -41,10 +42,24 @@ export type EarthquakesResponse = {
 export type ApiErrorResponse = {
   ok: false;
   /** Machine-readable reason, used to choose the right empty state. */
-  code: "upstream_unavailable" | "upstream_invalid" | "bad_request" | "internal";
+  code:
+    | "upstream_unavailable"
+    | "upstream_invalid"
+    | "bad_request"
+    | "not_found"
+    | "unsupported"
+    | "internal";
   /** One sentence suitable for display. */
   message: string;
 };
+
+export type EarthquakeDetailResponse = {
+  ok: true;
+  detail: EarthquakeDetail;
+  meta: ProviderMeta;
+};
+
+export type EarthquakeDetailResult = EarthquakeDetailResponse | ApiErrorResponse;
 
 export type EarthquakesResult = EarthquakesResponse | ApiErrorResponse;
 

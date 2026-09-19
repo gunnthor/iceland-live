@@ -27,6 +27,23 @@ export function formatCoordinates(latitude: number, longitude: number): string {
   return `${lat}, ${lon}`;
 }
 
+/**
+ * `5.2 ± 1.9 km` — a value with its reported error.
+ *
+ * Returns the bare value when no uncertainty was reported: an absent error bar
+ * must not be rendered as `± 0`, which would claim the opposite.
+ */
+export function formatWithUncertainty(
+  value: number,
+  uncertainty: number | null,
+  unit: string,
+  digits = 1,
+): string {
+  const base = `${value.toFixed(digits)}`;
+  if (uncertainty === null || !Number.isFinite(uncertainty)) return `${base} ${unit}`;
+  return `${base} \u00B1 ${uncertainty.toFixed(digits)} ${unit}`;
+}
+
 /** Thousands-separated integer. */
 export function formatCount(value: number): string {
   return value.toLocaleString("en-GB");

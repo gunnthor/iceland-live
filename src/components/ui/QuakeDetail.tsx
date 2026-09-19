@@ -2,10 +2,16 @@
 
 import type { Earthquake } from "@/domain/earthquake";
 import {
+  horizontalUncertaintyKm,
+  isFixedDepth,
+  type EarthquakeDetail,
+} from "@/domain/earthquake-detail";
+import {
   formatCoordinates,
   formatDepth,
   formatMagnitude,
   formatMagnitudeType,
+  formatWithUncertainty,
 } from "@/lib/format";
 import { formatExact, formatRelativeLong } from "@/lib/time";
 
@@ -58,19 +64,58 @@ function reviewLabel(quake: Earthquake): { text: string; note: string } {
  * told" and "it was zero" are different statements, and depth in particular can
  * legitimately be zero.
  */
+/**
+ * How to present depth, given what IMO actually determined.
+ *
+ * Three genuinely different situations that a single "10.0 km" would flatten:
+ * a depth solved for from the data (show the error bar), a depth an operator
+ * fixed because the data would not constrain it (say so — its zero uncertainty
+ * means "not determined", not "exact"), and no detail loaded yet (fall back to
+ * the catalogue value).
+ */
+function depthPresentation(
+  quake: Earthquake,
+  detail: EarthquakeDetail | null,
+): { value: string; note: string | null } {
+  if (!detail?.depthKm) {
+    return { value: formatDepth(quake.depthKm), note: null };
+  }
+
+  if (isFixedDepth(detail)) {
+    return {
+      value: `${detail.depthKm.value.toFixed(1)} km (fixed)`,
+      note: "Depth was assigned by the operator, not determined from the recorded data. IMO fixes depth — usually at 10 km — when the available phases cannot constrain it.",
+    };
+  }
+
+  return {
+    value: formatWithUncertainty(detail.depthKm.value, detail.depthKm.uncertainty, "km"),
+    note: null,
+  };
+}
+
 export function QuakeDetail({
   quake,
+  detail,
+  detailLoading,
   nowMs,
   onBack,
   onLocate,
 }: {
   quake: Earthquake;
+  /** Full solution with uncertainties, once it has loaded. */
+  detail: EarthquakeDetail | null;
+  detailLoading: boolean;
   nowMs: number;
   onBack: () => void;
   onLocate: () => void;
 }) {
   const review = reviewLabel(quake);
   const magnitudeType = formatMagnitudeType(quake.magnitudeType);
+  const depth = depthPresentation(quake, detail);
+  const horizontal = detail ? horizontalUncertaintyKm(detail) : null;
+  const confidence =
+    detail?.depthKm?.confidenceLevel ?? detail?.latitude?.confidenceLevel ?? null;
 
   return (
     <section aria-label="Earthquake details" className="animate-fade-rise">
@@ -101,10 +146,15 @@ export function QuakeDetail({
       </header>
 
       <div className="px-4 pb-5 pt-4">
-        <div className="flex items-baseline gap-3">
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
           <span className="tnum text-[34px] font-medium leading-none tracking-tight text-[var(--color-ink)]">
             {formatMagnitude(quake.magnitude)}
           </span>
+          {detail?.magnitude?.uncertainty != null && (
+            <span className="tnum text-[13px] text-[var(--color-ink-muted)]">
+              &plusmn; {detail.magnitude.uncertainty.toFixed(2)}
+            </span>
+          )}
           {magnitudeType && (
             <span className="text-[11px] text-[var(--color-ink-dim)]">{magnitudeType}</span>
           )}
@@ -119,7 +169,7 @@ export function QuakeDetail({
         </p>
 
         <dl className="mt-6 grid grid-cols-2 gap-x-4 gap-y-5">
-          <Field label="Depth" value={formatDepth(quake.depthKm)} />
+          <Field label="Depth" value={depth.value} title={depth.note ?? undefined} />
           <Field
             label="Status"
             value={
@@ -129,6 +179,19 @@ export function QuakeDetail({
             }
             title={review.note}
           />
+          {horizontal !== null && (
+            <Field
+              label="Location accuracy"
+              value={`\u00B1 ${horizontal.toFixed(1)} km`}
+              title="Latitude and longitude uncertainties combined in quadrature, as reported by IMO."
+            />
+          )}
+          {detail?.originTime?.uncertaintySeconds != null && (
+            <Field
+              label="Time accuracy"
+              value={`\u00B1 ${detail.originTime.uncertaintySeconds.toFixed(2)} s`}
+            />
+          )}
           <div className="col-span-2">
             <Field
               label="Time (Iceland, UTC)"
@@ -158,8 +221,19 @@ export function QuakeDetail({
           )}
         </dl>
 
+        {depth.note && (
+          <p className="animate-fade-rise mt-5 rounded border border-[var(--color-line)] bg-white/[0.02] px-2.5 py-2 text-[11px] leading-relaxed text-[var(--color-ink-dim)]">
+            {depth.note}
+          </p>
+        )}
+
         <p className="mt-6 border-t border-[var(--color-line)] pt-3 text-[11px] leading-relaxed text-[var(--color-ink-faint)]">
-          {review.note} Source: Icelandic Meteorological Office.
+          {review.note}{" "}
+          {confidence !== null && (
+            <>Uncertainties are quoted at {confidence}% confidence. </>
+          )}
+          {detailLoading && <>Loading the full solution&hellip; </>}
+          Source: Icelandic Meteorological Office.
         </p>
       </div>
     </section>

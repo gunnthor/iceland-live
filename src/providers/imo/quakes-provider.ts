@@ -10,6 +10,7 @@
  */
 
 import { isLikelyEarthquake, type Earthquake } from "@/domain/earthquake";
+import type { EarthquakeDetail } from "@/domain/earthquake-detail";
 import {
   ProviderError,
   type EarthquakeProvider,
@@ -17,7 +18,8 @@ import {
   type ProviderAttribution,
   type ProviderResult,
 } from "@/providers/types";
-import { imoFetchText, toImoTimestamp } from "./client";
+import { imoFetchJson, imoFetchText, toImoTimestamp } from "./client";
+import { normalizeEarthquakeDetail } from "./detail-normalize";
 import { normalizeQuakesCsv } from "./normalize";
 
 /**
@@ -102,6 +104,31 @@ export class ImoQuakesProvider implements EarthquakeProvider {
 
     return {
       data,
+      meta: {
+        providerId: this.id,
+        freshness: "live",
+        fetchedAt: new Date().toISOString(),
+        attribution: this.attribution,
+      },
+    };
+  }
+
+  /**
+   * GET /quakes/events/{event_id}
+   *
+   * Returns the SeisComP origin and magnitude with their uncertainties. Cached
+   * longer than the catalogue: a solution is revised at most a handful of times
+   * and then stops changing, so re-fetching it every minute buys nothing.
+   */
+  async fetchEarthquakeDetail(id: string): Promise<ProviderResult<EarthquakeDetail>> {
+    const payload = await imoFetchJson<unknown>({
+      service: "quakes",
+      path: `/events/${encodeURIComponent(id)}`,
+      revalidateSeconds: 300,
+    });
+
+    return {
+      data: normalizeEarthquakeDetail(id, payload),
       meta: {
         providerId: this.id,
         freshness: "live",

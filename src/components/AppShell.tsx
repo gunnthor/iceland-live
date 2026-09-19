@@ -17,6 +17,7 @@ import { ErrorBanner, LoadingState, UnavailableState } from "@/components/ui/Sta
 import type { EarthquakesResponse, VolcanoesResult } from "@/domain/api";
 import type { VolcanicSystem } from "@/domain/volcano";
 import { useEarthquakeData } from "@/hooks/useEarthquakeData";
+import { useEarthquakeDetail } from "@/hooks/useEarthquakeDetail";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { useNow } from "@/hooks/useNow";
 import { useUrlState } from "@/hooks/useUrlState";
@@ -54,6 +55,9 @@ export function AppShell({
     range,
     initialData,
   );
+
+  // Loaded only while an event is open, so panning the map never pays for it.
+  const { detail, loading: detailLoading } = useEarthquakeDetail(eventId);
 
   const [sort, setSort] = useState<FeedSort>("newest");
   const [sheetSnap, setSheetSnap] = useState<SheetSnap>("peek");
@@ -192,6 +196,8 @@ export function AppShell({
   ) : selected ? (
     <QuakeDetail
       quake={selected}
+      detail={detail?.id === selected.id ? detail : null}
+      detailLoading={detailLoading}
       nowMs={nowMs}
       onBack={() => setEventId(null)}
       onLocate={() => mapRef.current?.flyToPoint(selected.longitude, selected.latitude, 10.5)}

@@ -9,6 +9,7 @@
  */
 
 import type { Earthquake } from "@/domain/earthquake";
+import type { EarthquakeDetail } from "@/domain/earthquake-detail";
 import type { VolcanicSystem } from "@/domain/volcano";
 
 /** Where a payload came from, and how much we trust its freshness. */
@@ -74,6 +75,15 @@ export interface EarthquakeProvider {
   readonly id: string;
   readonly attribution: ProviderAttribution;
   fetchEarthquakes(query: EarthquakeQuery): Promise<ProviderResult<Earthquake[]>>;
+  /**
+   * The full solution for one event, including the uncertainties the bulk
+   * catalogue omits.
+   *
+   * Optional: a source may have no per-event endpoint. Callers must treat its
+   * absence as "no detail available" rather than as an error, and the UI keeps
+   * working from the catalogue record alone.
+   */
+  fetchEarthquakeDetail?(id: string): Promise<ProviderResult<EarthquakeDetail>>;
 }
 
 export interface VolcanoProvider {

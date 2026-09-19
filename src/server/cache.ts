@@ -34,6 +34,12 @@ export class TtlCache<T> {
     private readonly ttlMs: number,
     /** How long an expired entry may still be served if upstream fails. */
     private readonly maxStaleMs: number = 6 * 60 * 60 * 1000,
+    /**
+     * Maximum entries to retain. Caches keyed by something unbounded — an event
+     * id, say — would otherwise grow with every distinct key ever requested.
+     * Eviction is oldest-first by insertion, which `Map` preserves.
+     */
+    private readonly maxEntries: number = Infinity,
   ) {}
 
   /** Returns a fresh entry, or `null` when there is none. */
@@ -58,7 +64,21 @@ export class TtlCache<T> {
   }
 
   set(key: string, value: T): void {
+    // Re-inserting moves the key to the end, so a refreshed entry is not the
+    // next one evicted.
+    this.entries.delete(key);
     this.entries.set(key, { value, storedAt: Date.now() });
+
+    while (this.entries.size > this.maxEntries) {
+      const oldest = this.entries.keys().next();
+      if (oldest.done) break;
+      this.entries.delete(oldest.value);
+    }
+  }
+
+  /** Current entry count. Exposed for tests. */
+  get size(): number {
+    return this.entries.size;
   }
 
   clear(): void {
