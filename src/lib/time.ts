@@ -99,13 +99,20 @@ export function formatRelative(iso: string | number | Date, now: number = Date.n
   if (seconds < 0) return "just now";
   if (seconds < 45) return "just now";
 
+  /*
+   * Each unit is derived from the one above it, not independently from
+   * `seconds`. Mixing a rounded minute count with a floored hour count leaves a
+   * gap: at 59.5 minutes the minutes round to 60, so the minutes branch is
+   * skipped, while `floor(seconds / 3600)` is still 0 — and the label reads
+   * "0 h ago".
+   */
   const minutes = Math.round(seconds / 60);
   if (minutes < 60) return `${minutes} min ago`;
 
-  const hours = Math.floor(seconds / 3600);
+  const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours} h ago`;
 
-  const days = Math.floor(seconds / 86400);
+  const days = Math.floor(hours / 24);
   return `${days} d ago`;
 }
 

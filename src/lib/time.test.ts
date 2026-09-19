@@ -60,6 +60,19 @@ describe("formatRelative", () => {
     expect(ago(6 * 86_400_000)).toBe("6 d ago");
   });
 
+  it("never reports a zero count at a unit boundary", () => {
+    // At 59.5 min the minutes round up to 60, skipping the minutes branch. If
+    // hours were floored from seconds independently it would read "0 h ago".
+    expect(ago(59.5 * 60_000)).toBe("1 h ago");
+    expect(ago(59 * 60_000 + 59_000)).toBe("1 h ago");
+    expect(ago(23.99 * 3_600_000)).toBe("23 h ago");
+
+    // Nothing in the first two days may render as "0" of any unit.
+    for (let s = 0; s < 172_800; s += 37) {
+      expect(ago(s * 1000)).not.toMatch(/\b0 (min|h|d) ago\b/);
+    }
+  });
+
   it("does not report a future timestamp as negative", () => {
     // Clock skew between the browser and IMO should not print "-1 min ago".
     expect(formatRelative(new Date(now + 5000).toISOString(), now)).toBe("just now");
