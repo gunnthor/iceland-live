@@ -5,6 +5,7 @@ import { aviationRank, isAboveBackground, type VolcanicSystem } from "@/domain/v
 import { isActive, type GnssStation } from "@/domain/deformation";
 import type { WebcamSite } from "@/domain/webcam";
 import { readingFor, type AirQualityStation } from "@/domain/air-quality";
+import type { RoadWeatherStation } from "@/domain/roads";
 import { UNKNOWN_MAGNITUDE_SIZE, type QuakeFeatureProps } from "./quake-layers";
 
 export type QuakeFeatureCollection = GeoJSON.FeatureCollection<GeoJSON.Point, QuakeFeatureProps>;
@@ -188,5 +189,48 @@ export function toAirGeoJson(
         properties: { id: station.id, name: station.name, so2, h2s, gas: Math.max(so2, h2s) },
       };
     }),
+  };
+}
+
+export type WindFeatureProps = {
+  id: number;
+  name: string;
+  /**
+   * Compass bearing the wind is blowing **towards**, in degrees.
+   *
+   * The source reports the direction wind comes *from*, which is the
+   * meteorological convention. The arrow points downwind because the question
+   * this layer answers is where gas is being carried, so 180° is added once,
+   * here, rather than in the style where it would be easy to lose.
+   */
+  towards: number;
+  speed: number;
+  gust: number;
+};
+
+/** Wind readings for the vector layer. Stations with no wind are skipped. */
+export function toWindGeoJson(
+  stations: readonly RoadWeatherStation[],
+): GeoJSON.FeatureCollection<GeoJSON.Point, WindFeatureProps> {
+  return {
+    type: "FeatureCollection",
+    features: stations
+      .filter(
+        (station) => station.windDirectionDeg !== null && station.windSpeedMs !== null,
+      )
+      .map((station) => ({
+        type: "Feature" as const,
+        geometry: {
+          type: "Point" as const,
+          coordinates: [station.longitude, station.latitude],
+        },
+        properties: {
+          id: station.id,
+          name: station.name,
+          towards: ((station.windDirectionDeg as number) + 180) % 360,
+          speed: station.windSpeedMs as number,
+          gust: station.windGustMs ?? (station.windSpeedMs as number),
+        },
+      })),
   };
 }

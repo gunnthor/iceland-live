@@ -62,7 +62,56 @@ export type Reading = {
   /** Averaging period as published, e.g. "1h". */
   resolution: string | null;
   verification: VerificationState;
+  /**
+   * The preceding samples, oldest first, for a sparkline.
+   *
+   * The API returns roughly 24 hourly values per pollutant; the newest of them
+   * is this reading. Kept only for the pollutants the interface leads with,
+   * because carrying every series for every station would multiply the payload
+   * for charts nobody looks at.
+   *
+   * Hours with no valid sample are simply absent — the series is not padded,
+   * because a gap in monitoring is not a measurement of zero.
+   */
+  series?: Array<{ at: string; value: number }>;
 };
+
+/** Direction of travel across a series. Descriptive only. */
+export type Trend = "rising" | "falling" | "steady" | "unknown";
+
+/**
+ * Compares the mean of the most recent third of a series with the mean of the
+ * rest.
+ *
+ * Deliberately crude, and deliberately not extrapolated: it answers "has this
+ * been going up over the last few hours" and nothing about what happens next.
+ * A change smaller than 20% reads as steady, because hour-to-hour noise in
+ * unverified data is easily that large.
+ */
+export function trendOf(reading: Reading): Trend {
+  const series = reading.series;
+  if (!series || series.length < 6) return "unknown";
+
+  const split = Math.floor((series.length * 2) / 3);
+  const earlier = series.slice(0, split);
+  const recent = series.slice(split);
+  if (earlier.length === 0 || recent.length === 0) return "unknown";
+
+  const mean = (values: typeof series) =>
+    values.reduce((sum, point) => sum + point.value, 0) / values.length;
+
+  const before = mean(earlier);
+  const after = mean(recent);
+
+  // Near zero a ratio is meaningless; fall back to an absolute threshold.
+  if (before < 0.5 && after < 0.5) return "steady";
+  if (before <= 0) return after > 0.5 ? "rising" : "steady";
+
+  const change = (after - before) / before;
+  if (change > 0.2) return "rising";
+  if (change < -0.2) return "falling";
+  return "steady";
+}
 
 export type AirQualityStation = {
   /** Agency identifier, e.g. "STA-IS0052A". */

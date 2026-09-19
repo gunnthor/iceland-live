@@ -73,10 +73,13 @@ not built yet.
 - **Depth over time** — depth against time for any observation's events, so a
   cluster confined to one level reads differently from one spanning the crust.
 - **Live road cameras** — Vegagerðin's national network, ordered by distance from
-  wherever the activity is, refreshing about once a minute.
+  wherever the activity is. Select one on the map or in the list to watch it: the
+  viewer refreshes on the cameras' own two-minute cadence and keeps the frames it
+  collects, so you can step back through what the camera saw.
 - **Air & roads** — SO₂, H₂S and particulates from the Environment and Energy
-  Agency's monitoring network, plus live road-weather wind readings and any road
-  segment that is not plainly clear.
+  Agency's monitoring network, each with its last 24 hours as a sparkline and a
+  rising/falling note; live wind drawn as downwind arrows; and every road segment
+  that is not plainly clear, drawn on the map.
 - **Quick-focus viewpoints** for Iceland, Reykjanes and Grindavík.
 - **Shareable URLs** — `?range=7d&event=<id>&volcanoes=1&reykjanes=1&deformation=1&cams=1&air=1&insar=<id>`.
 
@@ -374,11 +377,28 @@ Neither endpoint is listed in Vegagerðin's public documentation; both were foun
 by matching the naming pattern of the documented webcam endpoint.
 
 **Weather stations** carry coordinates and live readings, and wind is the useful
-one: it decides where volcanic gas goes. **Road conditions** carry status text
-per segment but **no geometry**, so they cannot be drawn on the map — only
-listed. Of ~970 segments about 835 normally read "Greiðfært" (clear), so only
-the exceptions are surfaced; listing all of them would bury the handful that
-matter.
+one: it decides where volcanic gas goes. It is drawn as arrows pointing
+**downwind** — the source reports the direction wind comes *from*, and the
+conversion is done once, in `toWindGeoJson`, with a test, because reversing it
+would send a plume the wrong way across the map.
+
+**Road conditions** come from a third endpoint, found by enumerating
+Vegagerðin's ArcGIS server:
+
+```
+GET https://vegasja.vegagerdin.is/arcgis/rest/services/data/faerd/FeatureServer/16/query
+```
+
+This carries the same conditions *with* line geometry, keyed by the same
+`IDBUTUR`, so they are a map layer rather than only a list. The `where` clause
+asks the server for just the segments that are not clear — 146 of 1,565 — because
+fetching all of them would be megabytes to draw a uniformly green map. Elevation
+is stripped from every coordinate (about a third of the payload) and the result
+is simplified to 20 m, bringing 510 KB down to ~250 KB.
+
+Line colour is Vegagerðin's own. Width and opacity come from our severity
+ordering, because they give a 4x4-only track the same green as a clear road —
+right for a driver, unhelpful on a map read at a glance.
 
 Timestamps are day-first with no zone (`19.9.2026 17:40:00`) and are decomposed
 explicitly — `Date.parse` would read `19.9` as a month.
@@ -405,6 +425,18 @@ sentence and that use does not imply official status or endorsement. That
 sentence — *"Based on information provided by the Icelandic Road and Coastal
 Administration (IRCA)"* — is in `IRCA_ATTRIBUTION` and is rendered wherever the
 images appear, alongside a note that we are not affiliated with them.
+
+**Watching a camera.** There is no video: Vegagerðin publishes periodically
+refreshed JPEGs and exposes no stream, which was confirmed by probing for one and
+by watching a camera's `Last-Modified` header — it changed once in 121 seconds.
+The viewer therefore refreshes at that measured cadence rather than faster, says
+plainly that these are stills, and keeps the frames fetched during the session so
+they can be stepped through. That is the nearest honest thing to footage: it is
+genuinely what the camera saw, assembled here rather than streamed.
+
+Míla's volcano livestreams are real video but are published through YouTube with
+no machine-readable listing, and their stream identifiers change between
+eruptions. Hard-coding them would be guessing at data, so they are not included.
 
 **The image proxy.** Unlike the interferograms this is not a CORS requirement —
 an `<img>` needs no CORS. It is a courtesy: every viewer loading directly would
@@ -471,7 +503,7 @@ src/
 │   ├── registry.ts      The one place that picks an implementation
 │   ├── imo/             client · quakes · detail · volcanoes · CAP · EPOS
 │   ├── gis/             WFS client · Reykjanes layers (lava, barriers, graben)
-│   ├── vegagerdin/      live road cameras · road weather and conditions
+│   ├── vegagerdin/      road cameras · road weather · road condition geometry
 │   ├── ust/             air quality
 │   └── fixtures/        Offline snapshot provider
 │
@@ -503,7 +535,7 @@ src/
 │
 ├── components/
 │   ├── map/             MapView, base-style tuning, layer specs, GeoJSON builders
-│   ├── charts/          Timeline · DepthProfile
+│   ├── charts/          Timeline · DepthProfile · Sparkline
 │   ├── ui/              Panels, feed, detail, controls, states
 │   └── AppShell.tsx     Orchestration and layout
 │
@@ -817,9 +849,16 @@ that is where upstream reality meets our assumptions.
 - **Air readings are unverified and can be stale.** Everything served live is
   `verification: 3`, and individual stations sometimes go quiet for hours. The
   age of each reading is shown for that reason.
-- **Road conditions cannot be mapped.** The feed carries status text but no
-  geometry, so they are a list rather than a layer. Matching them to road
-  segments would need the separate snow-route dataset.
+- **The road condition geometry endpoint is undocumented.** It was found by
+  enumerating Vegagerðin's ArcGIS server, not from published documentation, so it
+  carries no stability promise. The layer fails softly: losing it costs the map
+  layer, not the conditions list.
+- **Road cameras are stills, not video.** Measured at roughly one new frame every
+  two minutes. The viewer collects frames while the page is open, so stepping
+  back only reaches as far as the session does.
+- **Air trends are crude by design.** "Rising" compares the mean of the last third
+  of the 24-hour series with the rest and reports nothing below a 20% change. It
+  describes the recent series; it does not extrapolate.
 - **The disk cache is not durable on serverless.** It accelerates cold starts on
   a warm instance and nothing more; correctness never depends on it.
 - **Depth is inferred as fixed from its value.** The bulk catalogue carries no
@@ -849,15 +888,20 @@ that is where upstream reality meets our assumptions.
 
 **Next up**
 
-1. **Wind vectors on the map.** The road-weather network already gives 203 live
-   wind readings, and during a gas episode the direction is the single most
-   useful thing on screen. Drawing them as arrows needs no new data source.
-2. **Air quality over time.** `getLatest` returns 24 hours per station and we
-   use only the newest sample. A sparkline per station would show whether a
-   reading is rising or clearing, which is what a reader actually wants to know.
-3. **Matching road conditions to geometry.** Vegagerðin's snow-route dataset
-   carries the segment geometry that `faerd2014_1` references by `IdButur`.
-   Joining them would turn the conditions list into a map layer.
+1. **Persist frames server-side for the cameras.** The viewer can only step back
+   as far as the current session, because frames are collected in the browser.
+   Storing a rolling window per camera would make a genuine time-lapse available
+   the moment someone opens it — which during unrest is exactly when nobody has
+   had the page open for an hour beforehand.
+2. **Dispersion forecasts.** IMO's EPOS gateway publishes daily ash and gas
+   dispersion products (`/hazard/maps/probabilistic-modelling-based/dispersion-ash-gas`).
+   Paired with the live wind already on the map, that is the difference between
+   "where the gas is" and "where it is going", from IMO's own model rather than
+   anything inferred here.
+3. **Air quality alongside the earthquake timeline.** The two are on the same
+   clock and currently in different panels. Putting an SO₂ trace under the
+   activity chart for a selected region would let a reader see a gas episode
+   against the seismicity that preceded it.
 
 **Later**
 

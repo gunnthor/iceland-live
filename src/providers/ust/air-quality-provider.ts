@@ -22,6 +22,7 @@ import type {
   Reading,
   VerificationState,
 } from "@/domain/air-quality";
+import { HEADLINE_POLLUTANTS } from "@/domain/air-quality";
 import {
   ProviderError,
   type ProviderAttribution,
@@ -81,17 +82,23 @@ type RawStationMeta = {
 };
 
 /**
- * Picks the newest reading from a parameter block.
+ * Picks the newest reading from a parameter block, with its preceding series.
  *
- * Index `"0"` is normally the newest, but the series is scanned by timestamp
+ * Index `"0"` is normally the newest, but samples are ordered by timestamp
  * rather than trusting that: an ordering assumption that silently breaks would
  * show an hours-old value as current.
+ *
+ * The series is kept only for the pollutants the interface charts, because
+ * carrying 24 points for all ten pollutants at every station would multiply the
+ * payload for charts nobody looks at.
  */
 function newestReading(pollutant: Pollutant, block: RawParameter): Reading | null {
   const unit = str(block.unit) ?? "";
   const resolution = str(block.resolution);
+  const keepSeries = HEADLINE_POLLUTANTS.includes(pollutant);
 
   let best: Reading | null = null;
+  const series: Array<{ at: string; value: number }> = [];
 
   for (const [key, entry] of Object.entries(block)) {
     if (!/^\d+$/.test(key)) continue;
@@ -114,6 +121,8 @@ function newestReading(pollutant: Pollutant, block: RawParameter): Reading | nul
      */
     if (value < 0) continue;
 
+    if (keepSeries) series.push({ at: observedAt, value });
+
     if (!best || observedAt > best.observedAt) {
       best = {
         pollutant,
@@ -124,6 +133,11 @@ function newestReading(pollutant: Pollutant, block: RawParameter): Reading | nul
         verification: toVerification(sample.verification),
       };
     }
+  }
+
+  if (best && keepSeries && series.length > 1) {
+    series.sort((a, b) => a.at.localeCompare(b.at));
+    best.series = series;
   }
 
   return best;

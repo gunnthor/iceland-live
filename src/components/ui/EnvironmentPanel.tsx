@@ -4,9 +4,12 @@ import { useMemo, useState } from "react";
 import {
   HEADLINE_POLLUTANTS,
   readingFor,
+  trendOf,
   type AirQualityStation,
   type Pollutant,
+  type Reading,
 } from "@/domain/air-quality";
+import { Sparkline } from "@/components/charts/Sparkline";
 import type { RoadCondition, RoadWeatherStation } from "@/domain/roads";
 import { cn } from "@/lib/format";
 import { formatRelative } from "@/lib/time";
@@ -43,6 +46,25 @@ function distanceSort<T extends { latitude: number; longitude: number }>(
     .slice(0, limit);
 }
 
+/**
+ * Direction of travel over the last few hours.
+ *
+ * An arrow and a word, not a colour: "rising" is a description of the series,
+ * and colouring it would edge into saying whether that is bad.
+ */
+function TrendMark({ reading }: { reading: Reading }) {
+  const trend = trendOf(reading);
+  if (trend === "unknown" || trend === "steady") return null;
+  return (
+    <span
+      className="shrink-0 text-[10px] text-[var(--color-ink-dim)]"
+      title={`Mean of the last third of the 24-hour series against the rest: ${trend}`}
+    >
+      {trend === "rising" ? "\u2197" : "\u2198"} {trend}
+    </span>
+  );
+}
+
 function AirRow({ station, nowMs }: { station: AirQualityStation; nowMs: number }) {
   const shown = HEADLINE_POLLUTANTS.map((pollutant) => ({
     pollutant,
@@ -62,13 +84,23 @@ function AirRow({ station, nowMs }: { station: AirQualityStation; nowMs: number 
           {observedAt ? formatRelative(observedAt, nowMs) : "—"}
         </span>
       </div>
-      <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5">
+      <div className="mt-1.5 space-y-1">
         {shown.map(({ pollutant, reading }) => (
-          <span key={pollutant} className="tnum text-[11px] text-[var(--color-ink-dim)]">
-            <span className="text-[var(--color-ink-muted)]">{pollutant}</span>{" "}
-            {reading?.value.toFixed(1)}
-            <span className="pl-0.5 text-[var(--color-ink-faint)]">{reading?.unit}</span>
-          </span>
+          <div key={pollutant} className="flex items-center gap-2">
+            <span className="tnum w-[104px] shrink-0 text-[11px] text-[var(--color-ink-dim)]">
+              <span className="text-[var(--color-ink-muted)]">{pollutant}</span>{" "}
+              {reading?.value.toFixed(1)}
+              <span className="pl-0.5 text-[var(--color-ink-faint)]">{reading?.unit}</span>
+            </span>
+            {reading?.series && reading.series.length > 1 && (
+              <Sparkline
+                points={reading.series}
+                tone="var(--color-ink-dim)"
+                className="shrink-0"
+              />
+            )}
+            {reading && <TrendMark reading={reading} />}
+          </div>
         ))}
       </div>
     </li>
@@ -204,7 +236,8 @@ export function EnvironmentPanel({
             </ul>
           )}
           <p className="border-t border-[var(--color-line)] px-4 py-3 text-[11px] leading-relaxed text-[var(--color-ink-faint)]">
-            Hourly averages from the Environment and Energy Agency, nearest the activity.
+            Hourly averages from the Environment and Energy Agency, nearest the activity,
+            with the last 24 hours beside each. Gaps in a trace are hours with no sample.
             These are real-time values and have not been verified by the agency. We report
             the measurements and do not grade them — for a health scale see{" "}
             <a

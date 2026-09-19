@@ -21,6 +21,8 @@ export type UrlState = {
   showDeformation: boolean;
   showWebcams: boolean;
   showEnvironment: boolean;
+  /** Vegagerðin station number of the camera being watched, if any. */
+  webcamId: number | null;
   /** Id of the interferogram laid over the map, if any. */
   insarId: string | null;
 };
@@ -33,6 +35,7 @@ export type UrlStateActions = {
   setShowDeformation: (show: boolean) => void;
   setShowWebcams: (show: boolean) => void;
   setShowEnvironment: (show: boolean) => void;
+  setWebcamId: (id: number | null) => void;
   setInsarId: (id: string | null) => void;
 };
 
@@ -45,6 +48,12 @@ export function readUrlState(params: URLSearchParams): UrlState {
     showDeformation: params.get("deformation") === "1",
     showWebcams: params.get("cams") === "1",
     showEnvironment: params.get("air") === "1",
+    webcamId: (() => {
+      const raw = params.get("cam");
+      if (!raw) return null;
+      const parsed = Number(raw);
+      return Number.isInteger(parsed) ? parsed : null;
+    })(),
     insarId: params.get("insar"),
   };
 }
@@ -126,6 +135,19 @@ export function useUrlState(): UrlState & UrlStateActions {
         update((params) => {
           if (show) params.set("air", "1");
           else params.delete("air");
+        }),
+      [update],
+    ),
+    setWebcamId: useCallback(
+      (id) =>
+        update((params) => {
+          if (id === null) {
+            params.delete("cam");
+          } else {
+            params.set("cam", String(id));
+            // Watching a camera implies the layer that shows where it is.
+            params.set("cams", "1");
+          }
         }),
       [update],
     ),

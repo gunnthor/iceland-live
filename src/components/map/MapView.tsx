@@ -14,6 +14,7 @@ import type { GnssStation } from "@/domain/deformation";
 import type { ReykjanesLayer } from "@/domain/reykjanes";
 import type { WebcamSite } from "@/domain/webcam";
 import type { AirQualityStation } from "@/domain/air-quality";
+import { conditionSeverity, type RoadWeatherStation } from "@/domain/roads";
 import type { VolcanicSystem } from "@/domain/volcano";
 import type { BoundingBox } from "@/lib/geo";
 import { DEFAULT_FOCUS } from "@/lib/geo";
@@ -25,6 +26,7 @@ import {
   toVolcanoPointGeoJson,
   toWebcamGeoJson,
   toAirGeoJson,
+  toWindGeoJson,
 } from "./geojson";
 import {
   pulseLayer,
@@ -84,6 +86,52 @@ function setInsarOverlay(map: MapLibreMap, insar: InsarOverlay | null, beforeId?
   );
 }
 
+/**
+ * Registers the arrow used by the wind layer.
+ *
+ * Drawn into a canvas at load rather than shipped as a file: it is a dozen
+ * lines of path, and an icon fetched over the network is one more thing that
+ * can fail between the map and a reader looking for wind direction.
+ *
+ * Points up (north) at 0°, so MapLibre's `icon-rotate` maps directly onto a
+ * compass bearing.
+ */
+function addWindArrow(map: MapLibreMap): void {
+  if (map.hasImage(WIND_ARROW_ICON)) return;
+
+  const size = 48;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const context = canvas.getContext("2d");
+  if (!context) return;
+
+  /*
+   * Chunkier than looks right at 48 px, because it is never drawn at 48 px.
+   * A thin arrow disappears entirely once scaled down to map size — the shaft
+   * lands below one pixel and all that survives is a faint smudge.
+   */
+  context.translate(size / 2, size / 2);
+  context.beginPath();
+  context.moveTo(0, -20);        // tip
+  context.lineTo(11, -2);        // right barb
+  context.lineTo(4, -4);
+  context.lineTo(4, 19);         // tail
+  context.lineTo(-4, 19);
+  context.lineTo(-4, -4);
+  context.lineTo(-11, -2);       // left barb
+  context.closePath();
+
+  context.fillStyle = "#8fd6ff";
+  context.fill();
+  context.strokeStyle = "#04070c";
+  context.lineWidth = 1.2;
+  context.stroke();
+
+  const image = context.getImageData(0, 0, size, size);
+  map.addImage(WIND_ARROW_ICON, image, { pixelRatio: 2 });
+}
+
 /** Narrows a style source to a GeoJSON source before writing data to it. */
 function geoJsonSource(map: MapLibreMap, id: string): GeoJSONSource | null {
   const source = map.getSource(id);
@@ -116,9 +164,15 @@ const GNSS_LABEL_LAYER = "gnss-station-label";
 const WEBCAM_SOURCE = "webcams";
 const WEBCAM_LAYER = "webcam-site";
 const WEBCAM_LABEL_LAYER = "webcam-site-label";
+const WEBCAM_SELECTED_LAYER = "webcam-site-selected";
 const AIR_SOURCE = "air-quality";
 const AIR_LAYER = "air-station";
 const AIR_LABEL_LAYER = "air-station-label";
+const WIND_SOURCE = "road-wind";
+const WIND_LAYER = "road-wind-arrow";
+const ROAD_CONDITION_SOURCE = "road-conditions";
+const ROAD_CONDITION_LAYER = "road-condition-line";
+const WIND_ARROW_ICON = "wind-arrow";
 
 /** Every layer belonging to the Reykjanes detail set, toggled together. */
 const REYKJANES_LAYERS = [
@@ -171,6 +225,9 @@ type MapData = {
   showWebcams: boolean;
   airStations: readonly AirQualityStation[];
   showAir: boolean;
+  windStations: readonly RoadWeatherStation[];
+  roadConditions: GeoJSON.FeatureCollection | null;
+  showRoads: boolean;
 };
 
 /**
@@ -222,7 +279,7 @@ function applyAll(map: MapLibreMap, data: MapData): void {
 
   geoJsonSource(map, WEBCAM_SOURCE)?.setData(toWebcamGeoJson(data.webcams));
   const webcamVisibility = data.showWebcams ? "visible" : "none";
-  for (const layerId of [WEBCAM_LAYER, WEBCAM_LABEL_LAYER]) {
+  for (const layerId of [WEBCAM_LAYER, WEBCAM_SELECTED_LAYER, WEBCAM_LABEL_LAYER]) {
     if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", webcamVisibility);
   }
 
@@ -231,6 +288,37 @@ function applyAll(map: MapLibreMap, data: MapData): void {
   for (const layerId of [AIR_LAYER, AIR_LABEL_LAYER]) {
     if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", airVisibility);
   }
+
+  geoJsonSource(map, WIND_SOURCE)?.setData(toWindGeoJson(data.windStations));
+  geoJsonSource(map, ROAD_CONDITION_SOURCE)?.setData(
+    withSeverity(data.roadConditions),
+  );
+  const roadVisibility = data.showRoads ? "visible" : "none";
+  for (const layerId of [WIND_LAYER, ROAD_CONDITION_LAYER]) {
+    if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", roadVisibility);
+  }
+}
+
+/**
+ * Adds our severity ranking to each segment's properties.
+ *
+ * Done here rather than server-side so the ordering stays next to the layer
+ * that uses it — the API returns exactly what Vegagerðin published.
+ */
+function withSeverity(
+  collection: GeoJSON.FeatureCollection | null,
+): GeoJSON.FeatureCollection {
+  if (!collection) return { type: "FeatureCollection", features: [] };
+  return {
+    type: "FeatureCollection",
+    features: collection.features.map((feature) => ({
+      ...feature,
+      properties: {
+        ...feature.properties,
+        severity: conditionSeverity(String(feature.properties?.status ?? "")),
+      },
+    })),
+  };
 }
 
 export type MapViewProps = {
@@ -257,6 +345,14 @@ export type MapViewProps = {
   /** Air quality stations. */
   airStations: readonly AirQualityStation[];
   showAir: boolean;
+  /** Road weather stations, drawn as downwind arrows. */
+  windStations: readonly RoadWeatherStation[];
+  /** Road segments that are not clear, with geometry. */
+  roadConditions: GeoJSON.FeatureCollection | null;
+  showRoads: boolean;
+  /** Camera site selected on the map, or null. */
+  selectedWebcamId: number | null;
+  onSelectWebcam: (id: number | null) => void;
   /** Space reserved for the surrounding panels, so framing stays visible. */
   padding: MapPadding;
   onReady?: () => void;
@@ -292,6 +388,11 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     showWebcams,
     airStations,
     showAir,
+    windStations,
+    roadConditions,
+    showRoads,
+    selectedWebcamId,
+    onSelectWebcam,
     padding,
     onReady,
   },
@@ -306,6 +407,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   /** Latest props the map's event handlers need, without re-binding them. */
   const onSelectRef = useRef(onSelect);
   onSelectRef.current = onSelect;
+  const onSelectWebcamRef = useRef(onSelectWebcam);
+  onSelectWebcamRef.current = onSelectWebcam;
 
   /*
    * The map is created asynchronously, so by the time its `load` event fires
@@ -329,6 +432,9 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     showWebcams,
     airStations,
     showAir,
+    windStations,
+    roadConditions,
+    showRoads,
   });
   latestRef.current = {
     quakes,
@@ -346,6 +452,9 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     showWebcams,
     airStations,
     showAir,
+    windStations,
+    roadConditions,
+    showRoads,
   };
 
   useImperativeHandle(
@@ -495,6 +604,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       GNSS_SOURCE,
       WEBCAM_SOURCE,
       AIR_SOURCE,
+      WIND_SOURCE,
+      ROAD_CONDITION_SOURCE,
     ]) {
       map.addSource(id, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
     }
@@ -745,6 +856,35 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
      * rather than data you read, and a marker hidden under a swarm is useless.
      */
     /*
+     * Road conditions, drawn beneath the events.
+     *
+     * Only segments that are not clear are fetched at all. Vegagerðin's own
+     * colour is used for the line, but width comes from our own severity
+     * ordering: they give a 4x4-only track the same green as a clear road,
+     * which is right for a driver and unhelpful on a map read at a glance.
+     */
+    map.addLayer(
+      {
+        id: ROAD_CONDITION_LAYER,
+        type: "line",
+        source: ROAD_CONDITION_SOURCE,
+        layout: { visibility: "none", "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": ["coalesce", ["get", "colour"], "#8C8A88"],
+          "line-width": [
+            "interpolate",
+            ["linear"],
+            ["zoom"],
+            5, ["case", [">=", ["get", "severity"], 2], 2, 1],
+            10, ["case", [">=", ["get", "severity"], 2], 4, 2],
+          ],
+          "line-opacity": ["case", [">=", ["get", "severity"], 2], 0.95, 0.6],
+        },
+      },
+      beforeId,
+    );
+
+    /*
      * Air quality stations, sized by measured volcanic gas.
      *
      * Size only, never a colour band: grading a concentration as safe or unsafe
@@ -795,17 +935,81 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       },
     });
 
+    /*
+     * Wind, as arrows pointing downwind.
+     *
+     * The source reports the direction wind comes from; the arrow shows where
+     * air is going, because the question during a gas episode is where it is
+     * being carried. Size grows with speed so a glance separates a breeze from
+     * something that will move a plume.
+     */
+    addWindArrow(map);
+    map.addLayer({
+      id: WIND_LAYER,
+      type: "symbol",
+      source: WIND_SOURCE,
+      layout: {
+        visibility: "none",
+        "icon-image": WIND_ARROW_ICON,
+        "icon-rotate": ["get", "towards"],
+        "icon-rotation-alignment": "map",
+        /*
+         * Collision culling left on. There are 183 stations; at Iceland zoom
+         * drawing all of them is a thicket, and letting MapLibre thin them to
+         * a representative scatter reads far better. Zooming in brings the
+         * rest back.
+         */
+        "icon-allow-overlap": false,
+        "icon-padding": 2,
+        /*
+         * The image is registered at pixelRatio 2, so a 48 px bitmap is 24 CSS
+         * px at size 1. These values are chosen against that: roughly 13 px for
+         * a light wind at Iceland zoom up to about 40 px for a gale close in.
+         */
+        "icon-size": [
+          "interpolate",
+          ["linear"],
+          ["zoom"],
+          5, ["interpolate", ["linear"], ["get", "speed"], 0, 0.55, 10, 0.8, 25, 1.05],
+          10, ["interpolate", ["linear"], ["get", "speed"], 0, 0.9, 10, 1.3, 25, 1.7],
+        ],
+      },
+      paint: { "icon-opacity": 0.85 },
+    });
+
     map.addLayer({
       id: WEBCAM_LAYER,
       type: "circle",
       source: WEBCAM_SOURCE,
       layout: { visibility: "none" },
       paint: {
+        /*
+         * A plain top-level zoom interpolation. Wrapping it in a `case` to
+         * grow the selected marker is rejected by MapLibre — `["zoom"]` may
+         * only feed a top-level interpolate — and the layer silently falls
+         * back to a default radius. The selection highlight is its own layer
+         * (`WEBCAM_SELECTED_LAYER`) for exactly that reason.
+         */
         "circle-radius": ["interpolate", ["linear"], ["zoom"], 5, 2.4, 10, 5],
         "circle-color": "#0b0e13",
         "circle-stroke-width": 1.6,
         "circle-stroke-color": "#c3b3f0",
         "circle-stroke-opacity": 0.9,
+      },
+    });
+
+    map.addLayer({
+      id: WEBCAM_SELECTED_LAYER,
+      type: "circle",
+      source: WEBCAM_SOURCE,
+      layout: { visibility: "none" },
+      filter: ["==", ["get", "id"], -1],
+      paint: {
+        "circle-radius": ["interpolate", ["linear"], ["zoom"], 5, 6, 10, 10],
+        "circle-color": "#c3b3f0",
+        "circle-opacity": 0.28,
+        "circle-stroke-width": 1.8,
+        "circle-stroke-color": "#e0d6ff",
       },
     });
 
@@ -871,13 +1075,33 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       })[0];
     };
 
+    /** Camera sites under the pointer, within the same forgiving box. */
+    const pickWebcam = (event: MapMouseEvent): MapGeoJSONFeature | undefined => {
+      if (!map.getLayer(WEBCAM_LAYER)) return undefined;
+      if (map.getLayoutProperty(WEBCAM_LAYER, "visibility") !== "visible") return undefined;
+      const box: [[number, number], [number, number]] = [
+        [event.point.x - 10, event.point.y - 10],
+        [event.point.x + 10, event.point.y + 10],
+      ];
+      return map.queryRenderedFeatures(box, { layers: [WEBCAM_LAYER] })[0];
+    };
+
     map.on("click", (event) => {
+      // Cameras win over earthquakes: a camera marker is something a reader
+      // aimed at, whereas quakes are the ambient layer underneath.
+      const camera = pickWebcam(event);
+      if (camera) {
+        const id = Number(camera.properties?.id);
+        onSelectWebcamRef.current(Number.isFinite(id) ? id : null);
+        return;
+      }
+
       const feature = pick(event);
       onSelectRef.current(feature ? String(feature.properties?.id ?? "") || null : null);
     });
 
     map.on("mousemove", (event) => {
-      map.getCanvas().style.cursor = pick(event) ? "pointer" : "";
+      map.getCanvas().style.cursor = pickWebcam(event) || pick(event) ? "pointer" : "";
     });
   }, []);
 
@@ -969,7 +1193,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     const map = mapRef.current;
     if (!map || !loadedRef.current) return;
     const visibility = showWebcams ? "visible" : "none";
-    for (const layerId of [WEBCAM_LAYER, WEBCAM_LABEL_LAYER]) {
+    for (const layerId of [WEBCAM_LAYER, WEBCAM_SELECTED_LAYER, WEBCAM_LABEL_LAYER]) {
       if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", visibility);
     }
   }, [showWebcams, webcams]);
@@ -989,6 +1213,35 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", visibility);
     }
   }, [showAir, airStations]);
+
+  // --- Selected camera ---
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !loadedRef.current || !map.getLayer(WEBCAM_SELECTED_LAYER)) return;
+    map.setFilter(WEBCAM_SELECTED_LAYER, ["==", ["get", "id"], selectedWebcamId ?? -1]);
+  }, [selectedWebcamId]);
+
+  // --- Wind and road conditions ---
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !loadedRef.current) return;
+    geoJsonSource(map, WIND_SOURCE)?.setData(toWindGeoJson(windStations));
+  }, [windStations]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !loadedRef.current) return;
+    geoJsonSource(map, ROAD_CONDITION_SOURCE)?.setData(withSeverity(roadConditions));
+  }, [roadConditions]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !loadedRef.current) return;
+    const visibility = showRoads ? "visible" : "none";
+    for (const layerId of [WIND_LAYER, ROAD_CONDITION_LAYER]) {
+      if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", visibility);
+    }
+  }, [showRoads, windStations, roadConditions]);
 
   // --- Interferogram overlay ---
   useEffect(() => {

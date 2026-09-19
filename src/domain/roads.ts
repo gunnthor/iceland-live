@@ -6,8 +6,9 @@
  *  - **Weather stations** carry coordinates and live readings. Wind is the one
  *    that matters most here: it decides where volcanic gas goes, which is the
  *    hazard from a Reykjanes eruption that reaches the most people.
- *  - **Road conditions** are per-segment status text. The feed carries no
- *    geometry, so these cannot be drawn on the map — only listed.
+ *  - **Road conditions** come in two forms. The open-data feed carries status
+ *    text per segment with no geometry; Vegagerðin's ArcGIS service carries the
+ *    same conditions *with* line geometry, which is what the map layer uses.
  */
 
 export type RoadWeatherStation = {
@@ -64,4 +65,43 @@ export const CLEAR_STATUS = "Greiðfært";
  */
 export function notableConditions(conditions: readonly RoadCondition[]): RoadCondition[] {
   return conditions.filter((condition) => condition.status !== CLEAR_STATUS);
+}
+
+
+/**
+ * A road segment's condition, with the geometry to draw it.
+ *
+ * From Vegagerðin's ArcGIS `data/faerd` service rather than the open-data feed.
+ * Only segments that are not plainly clear are fetched: 146 of 1,565 at the
+ * time of writing, which keeps the layer small and is also the only part worth
+ * drawing — a map where every road is green says nothing.
+ */
+export type RoadConditionSegment = {
+  /** `IDBUTUR`, the same segment key the open-data feed uses. */
+  id: number;
+  /** Route name, e.g. "Norðurljósavegur sunnan Bláalóns". */
+  name: string | null;
+  /** Road number, e.g. "F910" or "43". */
+  roadNumber: string | null;
+  /** Condition, e.g. "Ófært", "Ekki í þjónustu", "Fært fjallabílum". */
+  status: string;
+  /** Vegagerðin's own colour for the status. */
+  colour: string | null;
+  /** When the record was last modified. */
+  updatedAt: string | null;
+};
+
+/**
+ * Severity ordering for drawing: worse conditions go on top.
+ *
+ * Vegagerðin gives "Fært fjallabílum" (4x4 only) the same green as fully clear,
+ * which is right for their audience but leaves a map where an impassable road
+ * and a 4x4-only track are hard to tell apart at a glance. The ordering is ours;
+ * the colours stay theirs.
+ */
+export function conditionSeverity(status: string): number {
+  if (status.startsWith("Ófært")) return 3;
+  if (status.startsWith("Ekki í þjónustu") || status.startsWith("Vegur ekki")) return 2;
+  if (status.startsWith("Fært fjallabílum")) return 1;
+  return 0;
 }

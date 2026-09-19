@@ -17,7 +17,8 @@ import { cn } from "@/lib/format";
  * minute, so anything faster would just re-fetch the same bytes.
  */
 
-const REFRESH_MS = 60_000;
+/** Matches the measured publication rate; see `WebcamViewer`. */
+const REFRESH_MS = 120_000;
 const NEAREST = 6;
 
 function ViewImage({
@@ -187,8 +188,9 @@ export function WebcamPanel({
 
       {attribution && (
         <p className="border-t border-[var(--color-line)] px-4 py-3 text-[11px] leading-relaxed text-[var(--color-ink-faint)]">
-          {attribution}. Images refresh about once a minute and show road conditions,
-          not volcanic activity. Iceland Live is not affiliated with IRCA.
+          {attribution}. Still images, refreshed about every two minutes, showing road
+          conditions rather than volcanic activity. Select one to watch it. Iceland
+          Live is not affiliated with IRCA.
         </p>
       )}
     </section>

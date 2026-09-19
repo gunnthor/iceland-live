@@ -11,6 +11,7 @@ export type EnvironmentState = {
   roadWeather: RoadWeatherStation[];
   roadConditions: RoadCondition[];
   roadConditionsTotal: number;
+  roadConditionGeometry: GeoJSON.FeatureCollection | null;
   roadsError: string | null;
   roadAttribution: string | null;
   loading: boolean;
@@ -23,6 +24,7 @@ const EMPTY = {
   roadWeather: [] as RoadWeatherStation[],
   roadConditions: [] as RoadCondition[],
   roadConditionsTotal: 0,
+  roadConditionGeometry: null as GeoJSON.FeatureCollection | null,
   roadsError: null as string | null,
   roadAttribution: null as string | null,
   unavailable: false,
@@ -65,6 +67,7 @@ export function useEnvironment(enabled: boolean): EnvironmentState {
                 roadWeather: body.roadWeather,
                 roadConditions: body.roadConditions,
                 roadConditionsTotal: body.roadConditionsTotal,
+                roadConditionGeometry: body.roadConditionGeometry,
                 roadsError: body.roadsError,
                 roadAttribution: body.roadAttribution,
                 unavailable: false,

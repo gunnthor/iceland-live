@@ -32,6 +32,7 @@ export async function GET(): Promise<NextResponse> {
       // Only the segments that are not plainly clear; the other ~835 are noise.
       roadConditions: notableConditions(snapshot.roadConditions),
       roadConditionsTotal: snapshot.roadConditions.length,
+      roadConditionGeometry: snapshot.roadConditionGeometry,
       roadsError: snapshot.roadsError,
       roadAttribution: IRCA_ATTRIBUTION,
       meta: snapshot.meta,

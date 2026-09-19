@@ -9,6 +9,7 @@ import { AlertsPanel } from "@/components/ui/AlertsPanel";
 import { DeformationPanel } from "@/components/ui/DeformationPanel";
 import { RegionList } from "@/components/ui/RegionList";
 import { WebcamPanel } from "@/components/ui/WebcamPanel";
+import { WebcamViewer } from "@/components/ui/WebcamViewer";
 import { EnvironmentPanel } from "@/components/ui/EnvironmentPanel";
 import { BottomSheet, type SheetSnap } from "@/components/ui/BottomSheet";
 import { Brand } from "@/components/ui/Brand";
@@ -70,6 +71,7 @@ export function AppShell({
     showDeformation,
     showWebcams,
     showEnvironment,
+    webcamId,
     insarId,
     setRange,
     setEventId,
@@ -78,6 +80,7 @@ export function AppShell({
     setShowDeformation,
     setShowWebcams,
     setShowEnvironment,
+    setWebcamId,
     setInsarId,
   } = useUrlState();
   const isDesktop = useMediaQuery(DESKTOP_QUERY, true);
@@ -109,6 +112,12 @@ export function AppShell({
   const activityFocus = useMemo(
     () => data?.regions.find((region) => region.centre !== null)?.centre ?? null,
     [data],
+  );
+
+  /** The camera named in the URL, once the catalogue has loaded. */
+  const selectedWebcam = useMemo(
+    () => webcams.sites.find((site) => site.id === webcamId) ?? null,
+    [webcams.sites, webcamId],
   );
 
   /** The interferogram named in the URL, once the catalogue has loaded. */
@@ -271,13 +280,28 @@ export function AppShell({
     [insarId, setInsarId, isDesktop],
   );
 
-  /** Centres the map on a camera site. */
+  /** Opens a camera and centres on it. Used by the list. */
   const focusWebcam = useCallback(
     (site: WebcamSite) => {
+      setWebcamId(site.id);
       mapRef.current?.flyToPoint(site.longitude, site.latitude, 11);
       if (!isDesktop) setSheetSnap("half");
     },
-    [isDesktop],
+    [isDesktop, setWebcamId],
+  );
+
+  /**
+   * Opens a camera picked on the map.
+   *
+   * No fly-to here: the reader clicked a marker they can already see, and
+   * moving the map under them would be disorienting.
+   */
+  const selectWebcamFromMap = useCallback(
+    (id: number | null) => {
+      setWebcamId(id);
+      if (id !== null && !isDesktop) setSheetSnap("half");
+    },
+    [setWebcamId, isDesktop],
   );
 
   /** Frames a region's events, using the mean position of what we plotted. */
@@ -360,6 +384,14 @@ export function AppShell({
     <UnavailableState message={error.message} onRetry={refresh} offline={offline} />
   ) : !hasData ? (
     <LoadingState />
+  ) : selectedWebcam ? (
+    <WebcamViewer
+      site={selectedWebcam}
+      onClose={() => setWebcamId(null)}
+      onLocate={() =>
+        mapRef.current?.flyToPoint(selectedWebcam.longitude, selectedWebcam.latitude, 12)
+      }
+    />
   ) : selected ? (
     <QuakeDetail
       quake={selected}
@@ -481,6 +513,11 @@ export function AppShell({
         showWebcams={showWebcams}
         airStations={environment.air}
         showAir={showEnvironment}
+        windStations={environment.roadWeather}
+        roadConditions={environment.roadConditionGeometry}
+        showRoads={showEnvironment}
+        selectedWebcamId={webcamId}
+        onSelectWebcam={selectWebcamFromMap}
         padding={padding}
       />
 

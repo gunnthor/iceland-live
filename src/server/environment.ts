@@ -16,6 +16,10 @@ import type { AirQualityStation } from "@/domain/air-quality";
 import type { RoadCondition, RoadWeatherStation } from "@/domain/roads";
 import { UstAirQualityProvider } from "@/providers/ust/air-quality-provider";
 import { VegagerdinRoadsProvider } from "@/providers/vegagerdin/roads-provider";
+import {
+  VegagerdinRoadGeometryProvider,
+  type RoadConditionLayer,
+} from "@/providers/vegagerdin/road-geometry-provider";
 import { ProviderError, type ProviderMeta } from "@/providers/types";
 import { TtlCache } from "./cache";
 
@@ -29,6 +33,8 @@ export type EnvironmentSnapshot = {
   airError: string | null;
   roadWeather: RoadWeatherStation[];
   roadConditions: RoadCondition[];
+  /** The same conditions with geometry, for the map. Empty when unavailable. */
+  roadConditionGeometry: RoadConditionLayer;
   roadsError: string | null;
   meta: ProviderMeta;
 };
@@ -36,6 +42,7 @@ export type EnvironmentSnapshot = {
 const cache = new TtlCache<EnvironmentSnapshot>(ENVIRONMENT_TTL_MS, ENVIRONMENT_MAX_STALE_MS);
 const airProvider = new UstAirQualityProvider();
 const roadsProvider = new VegagerdinRoadsProvider();
+const roadGeometryProvider = new VegagerdinRoadGeometryProvider();
 let inFlight: Promise<EnvironmentSnapshot> | null = null;
 
 function reason(error: unknown): string {
@@ -48,7 +55,7 @@ export async function getEnvironment(): Promise<EnvironmentSnapshot> {
   if (fresh) return { ...fresh.value, meta: { ...fresh.value.meta, freshness: "cached" } };
 
   inFlight ??= (async () => {
-    const [air, roads] = await Promise.all([
+    const [air, roads, geometry] = await Promise.all([
       airProvider.fetchStations().catch((error: unknown) => {
         console.warn(`[environment] air quality unavailable: ${reason(error)}`);
         return { error: reason(error) } as const;
@@ -56,6 +63,12 @@ export async function getEnvironment(): Promise<EnvironmentSnapshot> {
       roadsProvider.fetchRoads().catch((error: unknown) => {
         console.warn(`[environment] road data unavailable: ${reason(error)}`);
         return { error: reason(error) } as const;
+      }),
+      // A separate service from the same agency; it may fail on its own, in
+      // which case the conditions still appear as a list without a map layer.
+      roadGeometryProvider.fetchNotClear().catch((error: unknown) => {
+        console.warn(`[environment] road geometry unavailable: ${reason(error)}`);
+        return null;
       }),
     ]);
 
@@ -73,6 +86,8 @@ export async function getEnvironment(): Promise<EnvironmentSnapshot> {
       airError: airOk ? null : air.error,
       roadWeather: roadsOk ? roads.data.weather : [],
       roadConditions: roadsOk ? roads.data.conditions : [],
+      roadConditionGeometry:
+        geometry?.data ?? { type: "FeatureCollection", features: [] },
       roadsError: roadsOk ? null : roads.error,
       meta: airOk
         ? air.meta

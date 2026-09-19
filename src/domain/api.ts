@@ -135,6 +135,8 @@ export type EnvironmentResponse = {
   roadWeather: RoadWeatherStation[];
   /** Only segments that are not plainly clear. */
   roadConditions: RoadCondition[];
+  /** The same conditions with line geometry, for the map layer. */
+  roadConditionGeometry: GeoJSON.FeatureCollection;
   /** How many segments were checked, so the filtered list has a denominator. */
   roadConditionsTotal: number;
   roadsError: string | null;
