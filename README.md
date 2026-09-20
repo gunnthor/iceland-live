@@ -1232,6 +1232,13 @@ the code is written to make that hard to forget.
 - **We never fabricate data.** If IMO is unreachable, the UI says so. Cached data is
   labelled as cached, stale data as stale, fixtures as sample data. Production never
   silently substitutes anything.
+- **A blank environment variable is read as an absent one.** `??` falls back on
+  `undefined` and on nothing else, while a key added to a hosting dashboard and
+  never filled in is `""`. A blank `IMO_API_BASE_URL` once made every
+  `new URL(path, "")` throw before a request was made, and took earthquakes,
+  warnings, volcanic status, deformation and dispersion down together in under
+  half a second. Configuration now goes through `src/lib/env.ts`, and a test
+  reproduces that outage.
 - **Our analytics are arithmetic, not interpretation.** Observations state the
   numbers they came from and can show their own method. A test asserts that no
   generated string contains predictive or hazard language (`precursor`, `imminent`,

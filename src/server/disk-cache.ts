@@ -29,12 +29,16 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
+import { envOr } from "@/lib/env";
+
 /**
  * Resolved per call rather than at import, so the environment can be set after
  * this module is loaded — which is also what makes it testable.
  */
 function directory(): string {
-  return process.env.ICELAND_LIVE_CACHE_DIR ?? join(tmpdir(), "iceland-live-cache");
+  // Blank counts as unset: an empty value here would root the cache at the
+  // process's working directory rather than anywhere anyone intended.
+  return envOr(process.env.ICELAND_LIVE_CACHE_DIR, join(tmpdir(), "iceland-live-cache"));
 }
 
 /** Logged once per key so a read-only filesystem does not spam the log. */
