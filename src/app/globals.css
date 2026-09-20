@@ -306,3 +306,53 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* ============================================================================
+   Print
+
+   Only one page here is meant to leave the screen: the written brief. A brief
+   gets printed and handed across a counter, and a near-black page would arrive
+   as a sheet of ink with grey text on it.
+
+   The tokens are redefined rather than the rules rewritten, so the document
+   prints as the same document — same hierarchy, same four steps of type — on
+   a white ground.
+   ========================================================================= */
+
+@media print {
+  :root {
+    --color-base: #ffffff;
+    --color-surface: #ffffff;
+    --color-surface-raised: #ffffff;
+
+    --color-ink: #0d1116;
+    --color-ink-muted: #31383f;
+    --color-ink-dim: #545c66;
+    --color-ink-faint: #6d757f;
+
+    --color-line: rgb(0 0 0 / 0.14);
+    --color-line-strong: rgb(0 0 0 / 0.28);
+
+    /*
+      IMO's alert colours, darkened enough to read as ink on paper.
+      The hue and the ordering are theirs and are preserved; what changes is
+      lightness, because #e8c34a on white is not a colour anyone can read.
+      The status is printed in words beside the rule in every case, so the
+      published level survives the adaptation even in greyscale.
+    */
+    --color-alert-green: #1d6b46;
+    --color-alert-yellow: #8a6a06;
+    --color-alert-orange: #a1500e;
+    --color-alert-red: #b0221a;
+  }
+
+  body {
+    background: #ffffff;
+  }
+
+  /* A URL nobody can click is worth less than the ink it costs. */
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+}

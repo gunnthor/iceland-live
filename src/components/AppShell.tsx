@@ -634,6 +634,7 @@ export function AppShell({
         selectedId={eventId}
         onFocusObservation={focusObservation}
         onSelectEvent={focusEvent}
+        briefHref={`/brief?range=${range}`}
       />
       {showDeformation && (
         <DeformationPanel

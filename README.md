@@ -21,6 +21,7 @@ not built yet.
 - [Stack](#stack)
 - [Running it](#running-it)
 - [Data sources](#data-sources)
+- [The written brief](#the-written-brief)
 - [Architecture](#architecture)
 - [Caching](#caching)
 - [Analytics: what the numbers mean](#analytics-what-the-numbers-mean)
@@ -97,6 +98,11 @@ not built yet.
   covers, ranked by how much the model puts at each. **These model eruptions that are not happening**: IMO produces them
   several times a day for selected volcanoes so the answer exists if one ever
   starts, and the panel says so before it lists anything.
+- **A written brief** at `/brief` — the summary, IMO's warnings, IMO's volcanic
+  status, the observations, the regional rates and the dispersal scenarios,
+  arranged into one page with a timestamp and its own standing statement. No
+  map, no JavaScript, prints on paper. It is the thing you send when somebody
+  asks what is going on.
 - **Quick-focus viewpoints** for Iceland, Reykjanes and Grindavík.
 - **Shareable URLs** — `?range=7d&event=<id>&volcanoes=1&reykjanes=1&deformation=1&cams=1&air=1&plume=1&insar=<id>&run=<uuid>&place=<lat,lon>`.
   What goes in is whatever a link carrying it would be worth sending: the
@@ -865,6 +871,63 @@ since a mis-decoded mask is confidently wrong in a way no mask is.
 
 ---
 
+## The written brief
+
+`/brief` is the one page here that is not a panel. Everything else assumes a
+reader in front of a map; this assumes a reader who has been sent something.
+Somebody asks what is going on, and the honest answer has been four panels and
+a legend — so the brief arranges those panels into a document with an order, a
+timestamp and its own standing statement, at a URL that survives being pasted
+into a message. `?range=` selects the window, exactly as on the map.
+
+It computes nothing new. Every number in it is already computed and tested
+elsewhere in this codebase; `src/analytics/brief.ts` does arrangement and
+framing and nothing else.
+
+**Server-rendered, and it stops there.** No client component, no polling, no
+map. A brief is a statement about a moment, and a document that quietly
+updates after it was sent is one whose sender and reader saw different things.
+The assembly time is at the top and reloading is how you get a newer one. It
+is also what makes the page work with images off, in a text-only mail client,
+and on paper — `@media print` redefines the tokens so the same document prints
+as ink on white rather than as a sheet of near-black.
+
+**Three kinds of text, distinguished in the types.**
+
+| | what it is | guarded against |
+|---|---|---|
+| `analyticText` | our arithmetic over IMO's catalogue | the same language guard the summary and observations pass |
+| `framingText` | what the document says about itself and its sources | predicting — it *must* be able to print "warning" |
+| relayed | IMO's wording, with IMO's name on it | nothing; it is never rewritten |
+
+The split is not pedantry. A warnings section that could not print the word
+"warning" would be unreadable, so the guard has to stop somewhere — and the
+moment it stops at a line drawn by hand, it gets relaxed to accommodate
+somebody else's vocabulary. Drawing it at "whose sentence is this" keeps our
+prose under the strict guard permanently. A test asserts that IMO's wording
+cannot reach the text the strict guard checks.
+
+**Each relayed section carries its own failure.** Five services feed this page
+and any of them can be down. A brief that renders an empty warnings list
+because the CAP broker timed out, and one that renders an empty warnings list
+because Iceland is quiet, would tell two readers the same thing; only one of
+them would be right, and the one who was wrong is the one who needed it. So
+"nothing to report" and "we could not ask" are different states in the type
+and different sentences on the page.
+
+The earthquake catalogue is the exception: the summary, the observations and
+the regional rates are all derived from it, so a brief without it would be a
+page of caveats. When it cannot be read the route says that in one sentence
+and points at IMO instead.
+
+**The method notes are printed once each.** On screen every observation hides
+its own method behind a toggle, which is right there — you expand the one you
+are questioning. Printed inline, three findings from one detector repeat the
+same paragraph three times, and a document nobody finishes reading has
+verified nothing.
+
+---
+
 ## Architecture
 
 ```
@@ -914,6 +977,7 @@ src/
 │   ├── watch-focus.ts   the ladder deciding where to point it
 │   ├── road-network.ts  the line work, cached for a day
 │   ├── dispersion.ts    current dispersal runs and per-location series
+│   ├── brief.ts         gathers the five sources the brief is built from
 │   ├── environment.ts   air quality + roads
 │   └── webcams.ts
 │
@@ -922,10 +986,13 @@ src/
 │   ├── histogram.ts     adaptive time binning
 │   ├── clusters.ts      DBSCAN + thresholded activity observations
 │   ├── baseline.ts      region rate and rank vs its own year
-│   └── summary.ts       deterministic prose
+│   ├── summary.ts       deterministic prose
+│   └── brief.ts         composes the sendable document; keeps our voice
+│                        separate from IMO's
 │
 ├── app/             Next.js routes.
 │   ├── page.tsx         Server-renders the first payload
+│   ├── brief/page.tsx   The written brief. Server-only, no client component.
 │   └── api/             /api/earthquakes[/:id] · /api/alerts · /api/volcanoes
 │                        /api/reykjanes · /api/insar[/image]
 │                        /api/webcams[/image|/reel|/frame] · /api/environment
@@ -1188,6 +1255,20 @@ the code is written to make that hard to forget.
   distinguish a contingency run from one produced for a real event, the code
   declines to claim either — and points the reader at IMO's aviation colour
   codes and warnings for the thing these products cannot tell them.
+- **The brief keeps our voice and IMO's apart in its types, not just its
+  layout.** `analyticText` returns everything the brief asserts about the
+  activity and is held to the same language guard as the summary and the
+  observations; `framingText` returns what it says about itself and its
+  sources, and is allowed to print the word "warning" because naming IMO's
+  product is the point of the section it introduces. IMO's own text is neither
+  and is never rewritten. A test asserts that IMO's wording cannot leak into
+  the text our guard checks — otherwise the guard would eventually be relaxed
+  to accommodate somebody else's vocabulary.
+- **A brief that could not reach a source says so in that source's place.**
+  Every relayed section carries its own failure state. An empty warnings list
+  because Iceland is quiet and an empty warnings list because the CAP broker
+  timed out would tell two readers the same thing, and the one who was wrong
+  is the one who needed it.
 - **Two series on one axis are not a correlation.** The air trace shares the
   earthquake timeline's clock so a reader can see a gas episode against a swarm,
   and the observation periods are marked on both at identical extents. No
@@ -1405,12 +1486,10 @@ that is where upstream reality meets our assumptions.
 
 ## Roadmap
 
-**Next up**
-
-1. **A written brief.** Everything here is a panel to be read on screen. The
-   deterministic summary, the observations, the current warnings and the
-   dispersal scenarios could compose into a page someone could send — which is
-   what people actually do with this kind of information.
+Nothing is queued. The three things that were next up — spending the frame
+budget where something is happening, putting a picked place in the link, and
+the written brief — have all landed. What is below is deliberately unscheduled:
+each one is a decision about scope rather than a task waiting for a turn.
 
 **Later**
 

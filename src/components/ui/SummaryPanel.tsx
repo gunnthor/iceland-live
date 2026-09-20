@@ -130,6 +130,7 @@ export function SummaryPanel({
   selectedId,
   onFocusObservation,
   onSelectEvent,
+  briefHref,
   className,
 }: {
   summary: Summary;
@@ -140,6 +141,8 @@ export function SummaryPanel({
   selectedId: string | null;
   onFocusObservation: (observation: ActivityObservation) => void;
   onSelectEvent: (id: string) => void;
+  /** The written brief for the window on screen, carrying the current range. */
+  briefHref: string;
   className?: string;
 }) {
   // Built once per render of the panel rather than once per observation row.
@@ -158,6 +161,18 @@ export function SummaryPanel({
             </span>
           ))}
         </p>
+        {/*
+          The one thing here that leaves the map. Everything above is for
+          somebody in front of it; the brief is for the person they are about
+          to tell, so it sits directly under the paragraph they would have
+          retyped.
+        */}
+        <a
+          href={briefHref}
+          className="mt-2.5 inline-block text-[11px] text-[var(--color-ink-dim)] underline underline-offset-2 transition-colors hover:text-[var(--color-ink)]"
+        >
+          Open a written brief &rarr;
+        </a>
       </div>
 
       {observations.length > 0 && (
