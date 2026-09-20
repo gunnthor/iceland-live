@@ -48,10 +48,6 @@ import { useDispersion } from "@/hooks/useDispersion";
 import { useDispersionPoint } from "@/hooks/useDispersionPoint";
 import { useDispersionExposure } from "@/hooks/useDispersionExposure";
 
-/** Where the dispersal panel evaluates the selected run. */
-type ProbeTarget =
-  | { kind: "station"; id: string }
-  | { kind: "point"; latitude: number; longitude: number };
 import { lavaFlowsByRecency } from "@/domain/reykjanes";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { useNow } from "@/hooks/useNow";
@@ -95,6 +91,7 @@ export function AppShell({
     webcamId,
     insarId,
     dispersionRunId,
+    pickedPlace,
     setRange,
     setEventId,
     setShowVolcanoes,
@@ -106,6 +103,7 @@ export function AppShell({
     setWebcamId,
     setInsarId,
     setDispersionRunId,
+    setPickedPlace,
   } = useUrlState();
   const isDesktop = useMediaQuery(DESKTOP_QUERY, true);
   const nowMs = useNow(serverNowMs);
@@ -195,12 +193,17 @@ export function AppShell({
    * Where the selected run is evaluated.
    *
    * Either a monitoring station, which can also answer what it is measuring
-   * now, or a coordinate the reader picked off the map — a farm, a campsite,
-   * a junction that is on no list. Component state rather than URL: it is a
-   * question asked about the run on screen, not part of what the link shows.
-   * Unset falls back to the nearest station.
+   * now, or a coordinate picked off the map — a farm, a campsite, a junction
+   * that is on no list. The two are the same question asked in two ways, so
+   * only one is set at a time and the picked place wins.
+   *
+   * The place is in the URL and the station is not, which is not an
+   * inconsistency. A coordinate nobody can name is only recoverable from the
+   * link that carries it — that is the whole point of "what does this put
+   * over my farm" — while a station is a named thing anyone can find again
+   * from the list in two clicks. Unset falls back to the nearest station.
    */
-  const [probeTarget, setProbeTarget] = useState<ProbeTarget | null>(null);
+  const [probeStationId, setProbeStationId] = useState<string | null>(null);
   /** True while the next map click means "ask about here". */
   const [picking, setPicking] = useState(false);
 
@@ -214,24 +217,34 @@ export function AppShell({
     return stationsNearest(environment.air, selectedRun);
   }, [environment.air, selectedRun]);
 
-  /** The station a station-target names, or the default when none is set. */
+  /*
+   * The picked place, as two numbers rather than as the object holding them.
+   *
+   * `pickedPlace` is rebuilt from the query string on every render, so
+   * anything downstream that depended on the object would be a new value each
+   * time — and the last thing downstream is a request to IMO's service.
+   */
+  const pickedLatitude = pickedPlace?.latitude ?? null;
+  const pickedLongitude = pickedPlace?.longitude ?? null;
+
+  /** The station being asked about, or the default when a place has not won. */
   const probeStation = useMemo(() => {
-    if (probeTarget?.kind === "point") return null;
+    if (pickedLatitude !== null) return null;
     return (
-      probeStations.find((station) => station.id === probeTarget?.id) ??
+      probeStations.find((station) => station.id === probeStationId) ??
       probeStations[0] ??
       null
     );
-  }, [probeStations, probeTarget]);
+  }, [probeStations, probeStationId, pickedLatitude]);
 
-  /** The coordinate being asked about, whichever kind of target chose it. */
+  /** The coordinate being asked about, whichever chose it. */
   const probePlace = useMemo(() => {
-    if (probeTarget?.kind === "point") {
-      return { latitude: probeTarget.latitude, longitude: probeTarget.longitude };
+    if (pickedLatitude !== null && pickedLongitude !== null) {
+      return { latitude: pickedLatitude, longitude: pickedLongitude };
     }
     if (!probeStation) return null;
     return { latitude: probeStation.latitude, longitude: probeStation.longitude };
-  }, [probeTarget, probeStation]);
+  }, [pickedLatitude, pickedLongitude, probeStation]);
 
   const point = useDispersionPoint(
     selectedRun && probePlace ? selectedRun.id : null,
@@ -240,11 +253,11 @@ export function AppShell({
 
   const pickPlace = useCallback(
     (place: { latitude: number; longitude: number }) => {
-      setProbeTarget({ kind: "point", ...place });
+      setPickedPlace(place);
       setPicking(false);
       if (!isDesktop) setSheetSnap("half");
     },
-    [isDesktop],
+    [isDesktop, setPickedPlace],
   );
 
   /** Which road-weather stations the selected run's footprint covers. */
@@ -647,7 +660,12 @@ export function AppShell({
           unavailable={dispersion.unavailable}
           probe={{
             stations: probeStations,
-            onStationChange: (id) => setProbeTarget({ kind: "station", id }),
+            onStationChange: (id) => {
+              setProbeStationId(id);
+              // One question, two ways of asking it: choosing a station has
+              // to release the coordinate, or the link would still name it.
+              setPickedPlace(null);
+            },
             place: probePlace,
             /* A coordinate has no instrument standing on it. */
             station: probeStation,

@@ -91,12 +91,19 @@ not built yet.
   over the map in Web Mercator with IMO's own colour scale, steppable hour by hour
   across the forecast window, evaluable at any monitoring station — IMO's own
   numbers at that coordinate, beside what the instrument there is actually
-  measuring — and reduced to the road-weather stations the run's own footprint
+  measuring — or at any place you click, which the link then carries, so "what
+  does this put over my farm" is a question you can send to someone rather than
+  one you can only ask — and reduced to the road-weather stations the run's own footprint
   covers, ranked by how much the model puts at each. **These model eruptions that are not happening**: IMO produces them
   several times a day for selected volcanoes so the answer exists if one ever
   starts, and the panel says so before it lists anything.
 - **Quick-focus viewpoints** for Iceland, Reykjanes and Grindavík.
-- **Shareable URLs** — `?range=7d&event=<id>&volcanoes=1&reykjanes=1&deformation=1&cams=1&air=1&plume=1&insar=<id>&run=<uuid>`.
+- **Shareable URLs** — `?range=7d&event=<id>&volcanoes=1&reykjanes=1&deformation=1&cams=1&air=1&plume=1&insar=<id>&run=<uuid>&place=<lat,lon>`.
+  What goes in is whatever a link carrying it would be worth sending: the
+  window, the event, the run, the place. Sort order and whether a sheet is
+  open are not. `run` and `place` are validated on the way *in* as well as on
+  the way out — both reach an upstream request path, and a link is something
+  anyone can hand you.
 
 ---
 
@@ -1400,11 +1407,7 @@ that is where upstream reality meets our assumptions.
 
 **Next up**
 
-1. **Share a place, not just a run.** The picked coordinate lives in component
-   state, so "look at what this scenario puts over my farm" is not a link. It
-   belongs in the URL beside the run, with the same validation the API already
-   applies.
-2. **A written brief.** Everything here is a panel to be read on screen. The
+1. **A written brief.** Everything here is a panel to be read on screen. The
    deterministic summary, the observations, the current warnings and the
    dispersal scenarios could compose into a page someone could send — which is
    what people actually do with this kind of information.
