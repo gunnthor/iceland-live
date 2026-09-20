@@ -12,13 +12,12 @@ import type { Summary } from "@/analytics/summary";
 import type { OfficialAlert } from "./alert";
 import type { GnssStation, Interferogram } from "./deformation";
 import type {
-  DepositExposure,
   DispersionLayer,
   DispersionPointSeries,
   DispersionRun,
 } from "./dispersion";
 import type { AirQualityStation } from "./air-quality";
-import type { RoadCondition, RoadWeatherStation } from "./roads";
+import type { RoadCondition, RoadExposure, RoadWeatherStation } from "./roads";
 import type { WebcamSite } from "./webcam";
 import type { RegionTally } from "@/analytics/stats";
 import type { Earthquake } from "./earthquake";
@@ -186,10 +185,10 @@ export type DispersionPointResponse = {
 export type DispersionPointResult = DispersionPointResponse | ApiErrorResponse;
 
 /**
- * The road-weather stations a run reaches.
+ * The routes a run reaches.
  *
- * `checked` is the size of the network the footprint was tested against, so
- * "three of 183" reads as a filter rather than as all we know about. Every
+ * `checked` is the number of routes the footprint was tested against, so
+ * "three of 800" reads as a filter rather than as all we know about. Every
  * figure is model output for a scenario.
  */
 export type DispersionExposureResponse = {
@@ -197,7 +196,9 @@ export type DispersionExposureResponse = {
   generatedAt: string;
   runId: string;
   layer: DispersionLayer;
-  stations: DepositExposure[];
+  routes: RoadExposure[];
+  /** Routes the footprint covers in total, listed or not. */
+  covered: number;
   checked: number;
   unavailable: boolean;
 };

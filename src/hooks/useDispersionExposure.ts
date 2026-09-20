@@ -2,11 +2,14 @@
 
 import { useEffect, useState } from "react";
 import type { DispersionExposureResult } from "@/domain/api";
-import type { DepositExposure, DispersionLayer } from "@/domain/dispersion";
+import type { DispersionLayer } from "@/domain/dispersion";
+import type { RoadExposure } from "@/domain/roads";
 
 export type ExposureState = {
-  stations: DepositExposure[];
+  routes: RoadExposure[];
   layer: DispersionLayer | null;
+  /** Routes the footprint covers in total, listed or not. */
+  covered: number;
   /** Size of the network the footprint was tested against. */
   checked: number;
   loading: boolean;
@@ -16,14 +19,15 @@ export type ExposureState = {
 
 type Loaded = {
   runId: string;
-  stations: DepositExposure[];
+  routes: RoadExposure[];
   layer: DispersionLayer | null;
+  covered: number;
   checked: number;
   unavailable: boolean;
 };
 
 /**
- * The road-weather stations a dispersal run reaches.
+ * The routes a dispersal run reaches.
  *
  * One request per run, answered from a server-side cache that already holds
  * the footprint and the per-location lookups behind it. Tagged with the run it
@@ -51,16 +55,17 @@ export function useDispersionExposure(runId: string | null): ExposureState {
           body.ok
             ? {
                 runId,
-                stations: body.stations,
+                routes: body.routes,
                 layer: body.layer,
+                covered: body.covered,
                 checked: body.checked,
                 unavailable: body.unavailable,
               }
-            : { runId, stations: [], layer: null, checked: 0, unavailable: true },
+            : { runId, routes: [], layer: null, covered: 0, checked: 0, unavailable: true },
         );
       } catch {
         if (!controller.signal.aborted) {
-          setLoaded({ runId, stations: [], layer: null, checked: 0, unavailable: true });
+          setLoaded({ runId, routes: [], layer: null, covered: 0, checked: 0, unavailable: true });
         }
       }
     })();
@@ -71,8 +76,9 @@ export function useDispersionExposure(runId: string | null): ExposureState {
   const matches = runId !== null && loaded?.runId === runId;
 
   return {
-    stations: matches ? (loaded?.stations ?? []) : [],
+    routes: matches ? (loaded?.routes ?? []) : [],
     layer: matches ? (loaded?.layer ?? null) : null,
+    covered: matches ? (loaded?.covered ?? 0) : 0,
     checked: matches ? (loaded?.checked ?? 0) : 0,
     loading: runId !== null && !matches,
     unavailable: matches ? (loaded?.unavailable ?? false) : false,

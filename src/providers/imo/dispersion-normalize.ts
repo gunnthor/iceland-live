@@ -21,7 +21,7 @@ import type {
   DispersionPointSeries,
   DispersionRun,
 } from "@/domain/dispersion";
-import { parseSeriesLayer, unitFor } from "@/domain/dispersion";
+import { parseSeriesLayer, scaleFor } from "@/domain/dispersion";
 
 /** What the EPOS catalogue tells us about one published run. */
 export type CatalogueEntry = {
@@ -289,6 +289,10 @@ export function latestPerScenario(entries: readonly CatalogueEntry[]): Catalogue
  * Nulls in `y` are holes, not zeros, and are dropped. Zeros are kept: inside
  * the model grid, "nothing here at this hour" is a result.
  *
+ * Values are scaled here, at the edge, so that nothing downstream ever holds
+ * a figure in the units the payload claims rather than the units it is in.
+ * See `scaleFor` for where the factors come from.
+ *
  * Note the x-axis convention differs between products — a 24-hour tephra run
  * starts an hour after its `start_time` while a 72-hour gas run starts at it —
  * so the returned times are used as given and never reconstructed.
@@ -308,18 +312,20 @@ export function normalizePointSeries(payload: unknown): DispersionPointSeries[] 
     const layer = parseSeriesLayer(name);
     if (!layer) continue;
 
+    const { factor, unit } = scaleFor(layer.dispersionType);
+
     const points: DispersionPointSeries["points"] = [];
     const length = Math.min(raw.x.length, raw.y.length);
     for (let index = 0; index < length; index += 1) {
       const at = toIso(raw.x[index]);
       const value = num(raw.y[index]);
       if (!at || value === null || value < 0) continue;
-      points.push({ at, value });
+      points.push({ at, value: value * factor });
     }
     if (points.length === 0) continue;
 
     points.sort((a, b) => a.at.localeCompare(b.at));
-    series.push({ name, layer, unit: unitFor(layer.dispersionType), points });
+    series.push({ name, layer, unit, points });
   }
 
   return series;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { maskCovers } from "./dispersion";
+import { maskCell, maskCovers } from "./dispersion";
 import type { AlphaMask } from "./png-alpha";
 
 /** The grid IMO actually serves: 40° of longitude by ~13° of latitude. */
@@ -64,5 +64,32 @@ describe("maskCovers", () => {
     expect(maskCovers(grid, BOUNDS, { latitude: 63.84, longitude: -22.43 })).toBe(true);
     // One cell north is empty, so the same longitude further north is not.
     expect(maskCovers(grid, BOUNDS, { latitude: 70, longitude: -22.43 })).toBe(false);
+  });
+});
+
+describe("maskCell", () => {
+  const grid = mask([], 4, 2);
+
+  it("indexes row-major from the north-west corner", () => {
+    expect(maskCell(grid, BOUNDS, { latitude: 72, longitude: -39 })).toBe(0);
+    expect(maskCell(grid, BOUNDS, { latitude: 72, longitude: -1 })).toBe(3);
+    expect(maskCell(grid, BOUNDS, { latitude: 61, longitude: -39 })).toBe(4);
+    expect(maskCell(grid, BOUNDS, { latitude: 61, longitude: -1 })).toBe(7);
+  });
+
+  it("gives two nearby coordinates the same cell", () => {
+    /*
+     * This is what the route list relies on: roads a few kilometres apart
+     * share a model cell, so one lookup answers for all of them and the
+     * request budget reaches further out.
+     */
+    const grindavik = maskCell(grid, BOUNDS, { latitude: 63.84, longitude: -22.43 });
+    const selhals = maskCell(grid, BOUNDS, { latitude: 63.86, longitude: -22.42 });
+    expect(grindavik).toBe(selhals);
+  });
+
+  it("is null off the grid rather than clamping to an edge cell", () => {
+    expect(maskCell(grid, BOUNDS, { latitude: 80, longitude: -20 })).toBeNull();
+    expect(maskCell(grid, BOUNDS, { latitude: 65, longitude: 10 })).toBeNull();
   });
 });

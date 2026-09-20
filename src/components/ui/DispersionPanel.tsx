@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { DepositExposure } from "@/domain/dispersion";
+import type { RoadExposure } from "@/domain/roads";
 import {
+  unitFor,
   describeLayer,
   frameTimes,
-  isQuotable,
   layerKey,
   legendFor,
   peakOf,
@@ -280,19 +280,9 @@ function StationProbe({
             <p className="tnum min-w-0 text-[10px] leading-tight text-[var(--color-ink-dim)]">
               {peak ? (
                 <>
-                  {/*
-                    The figure appears only for the layers whose units were
-                    checked against IMO's own scale and held. Deposit is a
-                    thousand times its own label, so it gets a time and a
-                    shape but never a number — see `isQuotable`.
-                  */}
-                  {isQuotable(layer) ? (
-                    <span className="text-[var(--color-ink)]">
-                      {formatConcentration(peak.value)} {modelled.unit}
-                    </span>
-                  ) : (
-                    <span className="text-[var(--color-ink-muted)]">heaviest</span>
-                  )}
+                  <span className="text-[var(--color-ink)]">
+                    {formatConcentration(peak.value)} {modelled.unit}
+                  </span>
                   <br />
                   at {formatDayClock(peak.at)}
                 </>
@@ -305,14 +295,6 @@ function StationProbe({
             Modelled {describeLayer(layer).toLowerCase()} for this scenario, over its{" "}
             {run.durationHours} forecast hours. The dashed line is now; everything
             right of it is model output for an eruption that is not occurring.
-            {!isQuotable(layer) && (
-              <>
-                {" "}
-                No figure is given for deposit: IMO&rsquo;s per-location values for it
-                come back about a thousand times their own label, so the shape is
-                shown and the number is not.
-              </>
-            )}
           </p>
         </div>
       )}
@@ -349,16 +331,16 @@ function StationProbe({
 }
 
 /**
- * The roads a scenario reaches.
+ * The routes a scenario reaches.
  *
- * ## Ordered, not quantified
+ * ## The figures are IMO's, in IMO's units
  *
- * There is no figure beside these names, and that is deliberate rather than
- * an omission: this list is built on the ground-deposit layer, which is the
- * one whose per-location figures come back about a thousand times their own
- * label. See `isQuotable` for the comparison that established it. The
- * stations are ranked by the model's own values — a ratio, which survives a
- * constant factor — and the values themselves never leave the server.
+ * The per-location endpoint does not return the units its series names claim
+ * — deposit arrives in grams per square metre under a name saying kilograms.
+ * `scaleFor` applies the conversions IMO's own viewer applies to the same
+ * payload, so what is shown here is what their viewer would show. The bar is
+ * each station's share of the heaviest, which is how a list of eight is read
+ * at a glance.
  *
  * ## Where the list comes from
  *
@@ -368,13 +350,15 @@ function StationProbe({
  * per-location endpoint.
  */
 function ExposureList({
-  stations,
+  routes,
+  covered,
   checked,
   layer,
   loading,
   unavailable,
 }: {
-  stations: readonly DepositExposure[];
+  routes: readonly RoadExposure[];
+  covered: number;
   checked: number;
   layer: DispersionLayer | null;
   loading: boolean;
@@ -394,8 +378,8 @@ function ExposureList({
       <div className="mt-3 border-t border-[var(--color-line)] pt-3">
         <p className="label">Roads this scenario reaches</p>
         <p className="mt-1 text-[10px] leading-relaxed text-[var(--color-ink-faint)]">
-          The modelled footprint could not be read, so we cannot say which road
-          stations this run covers.
+          The modelled footprint could not be read, so we cannot say which routes
+          this run covers.
         </p>
       </div>
     );
@@ -406,40 +390,44 @@ function ExposureList({
       <div className="flex items-baseline justify-between gap-2">
         <p className="label">Roads this scenario reaches</p>
         <p className="tnum text-[10px] text-[var(--color-ink-faint)]">
-          {stations.length} of {checked} stations
+          {/*
+            The listed count, not the covered one. After a day a 10 km column
+            puts *something* on nearly every road in the country, so "672 of
+            702" leads with a number that is true and reads as a catastrophe.
+            The covered figure is given below, with what it means.
+          */}
+          {routes.length} routes shown
         </p>
       </div>
 
-      {stations.length === 0 ? (
+      {routes.length === 0 ? (
         <p className="mt-1 text-[10px] leading-relaxed text-[var(--color-ink-faint)]">
-          The run&rsquo;s footprint covers no road-weather station in the network.
+          The run&rsquo;s footprint covers no road in the network.
         </p>
       ) : (
         <ul className="mt-1.5 space-y-1">
-          {stations.map((station) => (
-            <li key={station.stationId} className="flex items-center gap-2">
+          {routes.map((route) => (
+            <li key={route.route} className="flex items-center gap-2">
               <span className="min-w-0 flex-1 truncate text-[11px] leading-tight text-[var(--color-ink)]">
-                {station.stationName}
+                {route.route}
               </span>
               <span className="tnum shrink-0 text-[10px] text-[var(--color-ink-faint)]">
-                {Math.round(station.distanceKm)} km
+                {Math.round(route.sampledKm)} km
               </span>
-              {/*
-                A bar, not a number. Its length is this station's share of the
-                largest in the list, which is the only thing about these
-                figures that can be published.
-              */}
+              <span className="tnum w-16 shrink-0 text-right text-[10px] text-[var(--color-ink)]">
+                {route.peak === null ? "\u2014" : formatConcentration(route.peak)}
+              </span>
               <span
                 aria-hidden="true"
-                className="h-1 w-14 shrink-0 overflow-hidden rounded-full bg-white/[0.07]"
+                className="h-1 w-12 shrink-0 overflow-hidden rounded-full bg-white/[0.07]"
               >
                 <span
                   className="block h-full rounded-full bg-[#d09a6a]"
-                  style={{ width: `${Math.max((station.share ?? 0) * 100, station.share ? 3 : 0)}%` }}
+                  style={{ width: `${Math.max((route.share ?? 0) * 100, route.share ? 3 : 0)}%` }}
                 />
               </span>
               <span className="tnum w-10 shrink-0 text-right text-[10px] text-[var(--color-ink-dim)]">
-                {station.peakAt ? formatClock(station.peakAt) : "\u2014"}
+                {route.peakAt ? formatClock(route.peakAt) : "\u2014"}
               </span>
             </li>
           ))}
@@ -447,15 +435,28 @@ function ExposureList({
       )}
 
       <p className="mt-2 text-[10px] leading-relaxed text-[var(--color-ink-faint)]">
-        {layer && <>Based on {describeLayer(layer).toLowerCase()}. </>}
-        Bars are each station&rsquo;s share of the heaviest in this list, and the time
-        is when the model peaks there. No quantity is given:{" "}
-        <strong className="font-medium text-[var(--color-ink-dim)]">
-          IMO&rsquo;s per-location deposit values come back about a thousand times
-          their own label
-        </strong>{" "}
-        &mdash; checked against their own published scale &mdash; so we rank by
-        them and do not quote them.
+        {layer && (
+          <>
+            Based on {describeLayer(layer).toLowerCase()}, in{" "}
+            {unitFor(layer.dispersionType)}.{" "}
+          </>
+        )}
+        Each figure is the model&rsquo;s peak at <em>one sampled point</em> on the
+        route &mdash; the covered point nearest the source, whose distance is
+        shown &mdash; converted the way IMO&rsquo;s own viewer converts these values.
+        A long route may be heavier somewhere else along it. The bar is that
+        route&rsquo;s share of the heaviest listed here, and at most two routes are
+        shown per model cell so the list spans the plume rather than crowding
+        one spot.
+        {covered > 0 && (
+          <>
+            {" "}
+            The footprint touches {covered} of {checked} routes at{" "}
+            <em>any</em> amount &mdash; it is drawn down to IMO&rsquo;s lowest band,
+            a hundredth of a kilogram per square metre &mdash; so that count is
+            a reach, not a severity.
+          </>
+        )}
       </p>
     </div>
   );
@@ -680,7 +681,8 @@ function RunControls({
       </div>
 
       <ExposureList
-        stations={exposure.stations}
+        routes={exposure.routes}
+        covered={exposure.covered}
         checked={exposure.checked}
         layer={exposure.layer}
         loading={exposure.loading}
@@ -704,7 +706,8 @@ function RunControls({
 
 /** Everything the road list needs. */
 export type ExposureProps = {
-  stations: readonly DepositExposure[];
+  routes: readonly RoadExposure[];
+  covered: number;
   layer: DispersionLayer | null;
   checked: number;
   loading: boolean;

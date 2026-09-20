@@ -18,12 +18,12 @@ import {
   toRasterTime,
   frameTimes,
   withinBounds,
-  type DepositExposure,
   type DispersionRun,
 } from "@/domain/dispersion";
+import type { RoadExposure, RoadSegmentLine } from "@/domain/roads";
 import { distanceKm } from "@/lib/geo";
 import { decodeAlpha, type AlphaMask } from "./png-alpha";
-import { getEnvironment } from "./environment";
+import { getRoadNetwork } from "./road-network";
 import { IMO_API_VERSIONS, IMO_BASE_URL } from "@/providers/imo/client";
 import { ImoDispersionProvider } from "@/providers/imo/dispersion-provider";
 import { ProviderError, type ProviderMeta } from "@/providers/types";
@@ -151,19 +151,32 @@ export async function getDispersionPoint(
 }
 
 /**
- * Which roads a run puts something over.
+ * Which routes a run puts something over.
  *
  * ## How the two sources divide the work
  *
  * The raster answers *where*: one bit per pixel, read from the alpha channel,
  * meaning "the model puts something here". The per-location endpoint answers
- * *how much*, with IMO's own numbers. Neither question is answered by reading
- * colours off the picture, which would be inventing a measurement.
+ * *how much*, with IMO's own numbers, converted the way IMO's own viewer
+ * converts them. Neither question is answered by reading colours off the
+ * picture, which would be inventing a measurement.
  *
- * Using the raster as an index is what keeps this bounded. Iceland has 183
- * road-weather stations and asking the model about each would be 183 upstream
- * requests; the mask usually rules out all but a handful before anything is
- * asked.
+ * Using the raster as an index is what keeps this bounded. The network is
+ * about 1,565 segments over some 800 routes; asking the model about each
+ * vertex would be thousands of requests, and the mask usually rules out all
+ * but a handful of routes before anything is asked.
+ *
+ * ## Routes, not points on them
+ *
+ * An earlier version listed road-weather stations, which are points that
+ * happen to sit on roads. "Grindavíkurvegur" is what a reader recognises, so
+ * segments are matched against the footprint and grouped by route name.
+ *
+ * The figure, though, is still a point measurement: one sampled vertex per
+ * route, the one nearest the source among those the footprint covers. Asking
+ * at every vertex would put the request count back where the mask removed it.
+ * `sampledKm` says which point was measured, and a long route may be heavier
+ * somewhere else along it.
  *
  * ## Orientation
  *
@@ -174,8 +187,30 @@ export async function getDispersionPoint(
  * top-down reading agreed at every one of them while bottom-up did not.
  */
 
-/** Stations asked about. The mask normally leaves far fewer than this. */
-export const MAX_EXPOSED_STATIONS = 8;
+/** Routes listed. */
+export const MAX_EXPOSED_ROUTES = 8;
+
+/**
+ * Distinct model cells asked about.
+ *
+ * Routes are grouped into the cell their sample falls in before anything is
+ * asked, because a cell is about seven kilometres across and the roads around
+ * a vent all land in one or two of them. Without that, eight requests bought
+ * eight answers about the same place and the list read as four spellings of
+ * "next to the volcano" — with Grindavíkurvegur, sixteen kilometres out,
+ * truncated off the end. Grouping first spends the same requests on ground
+ * that differs.
+ */
+const MAX_SAMPLED_CELLS = 16;
+
+/**
+ * Routes listed from any one cell.
+ *
+ * Without this the list was eight roads around one vent all reporting the
+ * same figure, because they share a model cell and so share its answer. Two
+ * per cell makes the list span the footprint, which is the thing it is for.
+ */
+const MAX_ROUTES_PER_CELL = 2;
 
 const MASK_TTL_MS = 6 * 60 * 60_000;
 const EXPOSURE_TTL_MS = 60 * 60_000;
@@ -185,13 +220,15 @@ const exposureCache = new TtlCache<DispersionExposure>(EXPOSURE_TTL_MS, 6 * 60 *
 
 export type DispersionExposure = {
   runId: string;
-  /** The layer the ordering is based on. */
+  /** The layer the figures are for. */
   layer: DispersionLayer;
-  /** Stations the run reaches, heaviest first. */
-  stations: DepositExposure[];
-  /** How many stations the footprint was tested against, as a denominator. */
+  /** Routes the run reaches, heaviest first. Capped; see `covered`. */
+  routes: RoadExposure[];
+  /** How many routes the footprint covers in total, listed or not. */
+  covered: number;
+  /** How many routes the footprint was tested against, as a denominator. */
   checked: number;
-  /** True when the footprint could not be read; `stations` is then empty. */
+  /** True when the footprint could not be read; `routes` is then empty. */
   unavailable: boolean;
 };
 
@@ -240,17 +277,43 @@ async function groundMask(
   return mask;
 }
 
-/** Whether the model puts anything at this coordinate. Row 0 is the north edge. */
+/**
+ * The index of the cell a coordinate falls in, or null when it is off the
+ * grid. Row 0 is the northern edge.
+ */
+export function maskCell(
+  mask: AlphaMask,
+  bounds: DispersionRun["bounds"],
+  point: { latitude: number; longitude: number },
+): number | null {
+  const { west, east, south, north } = bounds;
+  const x = Math.floor(((point.longitude - west) / (east - west)) * mask.width);
+  const y = Math.floor(((north - point.latitude) / (north - south)) * mask.height);
+  if (x < 0 || y < 0 || x >= mask.width || y >= mask.height) return null;
+  return y * mask.width + x;
+}
+
+/** Whether the model puts anything at this coordinate. */
 export function maskCovers(
   mask: AlphaMask,
   bounds: DispersionRun["bounds"],
   point: { latitude: number; longitude: number },
 ): boolean {
-  const { west, east, south, north } = bounds;
-  const x = Math.floor(((point.longitude - west) / (east - west)) * mask.width);
-  const y = Math.floor(((north - point.latitude) / (north - south)) * mask.height);
-  if (x < 0 || y < 0 || x >= mask.width || y >= mask.height) return false;
-  return (mask.alpha[y * mask.width + x] ?? 0) > 0;
+  const cell = maskCell(mask, bounds, point);
+  return cell !== null && (mask.alpha[cell] ?? 0) > 0;
+}
+
+/** Groups segments by the route name a reader would recognise. */
+function byRoute(segments: readonly RoadSegmentLine[]): Map<string, RoadSegmentLine[]> {
+  const routes = new Map<string, RoadSegmentLine[]>();
+  for (const segment of segments) {
+    // A segment with no route name cannot be reported as one.
+    if (!segment.name) continue;
+    const existing = routes.get(segment.name);
+    if (existing) existing.push(segment);
+    else routes.set(segment.name, [segment]);
+  }
+  return routes;
 }
 
 export async function getDispersionExposure(runId: string): Promise<DispersionExposure | null> {
@@ -266,74 +329,142 @@ export async function getDispersionExposure(runId: string): Promise<DispersionEx
   const empty: DispersionExposure = {
     runId,
     layer,
-    stations: [],
+    routes: [],
+    covered: 0,
     checked: 0,
     unavailable: true,
   };
 
-  let stations;
-  try {
-    stations = (await getEnvironment()).roadWeather;
-  } catch {
-    return empty;
-  }
+  const network = await getRoadNetwork();
+  if (network.length === 0) return empty;
+
+  const routes = byRoute(network);
 
   const mask = await groundMask(run, layer);
-  if (!mask) return { ...empty, checked: stations.length };
-
-  const candidates = stations
-    .filter((station) => withinBounds(run.bounds, station))
-    .filter((station) => maskCovers(mask, run.bounds, station))
-    .map((station) => ({ station, distanceKm: distanceKm(run, station) }))
-    .sort((a, b) => a.distanceKm - b.distanceKm)
-    .slice(0, MAX_EXPOSED_STATIONS);
-
-  const measured = await Promise.all(
-    candidates.map(async ({ station, distanceKm: distance }) => {
-      const base = {
-        stationId: station.id,
-        stationName: station.name,
-        latitude: station.latitude,
-        longitude: station.longitude,
-        distanceKm: distance,
-      };
-
-      const lookup = await getDispersionPoint(runId, station.latitude, station.longitude);
-      if (!lookup.ok) return { base, peak: null };
-
-      const series = lookup.series.find(
-        (item) =>
-          item.layer.dispersionType === layer.dispersionType &&
-          item.layer.altitude === layer.altitude &&
-          item.layer.altitudeUnit === layer.altitudeUnit,
-      );
-      return { base, peak: series ? peakOf(series) : null };
-    }),
-  );
+  if (!mask) return { ...empty, checked: routes.size };
 
   /*
-   * Expressed as a share of the largest rather than as a figure.
-   *
-   * IMO's per-location values and their own raster legend disagree by about a
-   * factor of a thousand — see `DepositExposure` — so the magnitudes cannot be
-   * quoted. A ratio survives any constant factor, which is why the ordering
-   * can be published when the numbers behind it cannot.
+   * A route is reached when any vertex of any of its segments falls in a
+   * covered cell. Vertices are about two kilometres apart after the service's
+   * generalisation and the cells are about seven, so a segment cannot cross a
+   * covered cell without putting a vertex in it.
    */
-  const largest = Math.max(0, ...measured.map((item) => item.peak?.value ?? 0));
+  type Candidate = {
+    route: string;
+    roadNumber: string | null;
+    segments: number;
+    cell: number;
+    sample: { latitude: number; longitude: number };
+    sampledKm: number;
+  };
 
-  const exposed: DepositExposure[] = measured
-    .map(({ base, peak }) => ({
-      ...base,
-      share: peak && largest > 0 ? peak.value / largest : null,
-      peakAt: peak?.at ?? null,
-    }))
-    .sort((a, b) => (b.share ?? -1) - (a.share ?? -1));
+  const candidates: Candidate[] = [];
+
+  for (const [route, segments] of routes) {
+    let covered = 0;
+    let nearest: { latitude: number; longitude: number } | null = null;
+    let nearestCell: number | null = null;
+    let nearestKm = Infinity;
+
+    for (const segment of segments) {
+      let segmentCovered = false;
+      for (const point of segment.points) {
+        const cell = maskCell(mask, run.bounds, point);
+        if (cell === null || (mask.alpha[cell] ?? 0) === 0) continue;
+        segmentCovered = true;
+        const distance = distanceKm(run, point);
+        if (distance < nearestKm) {
+          nearestKm = distance;
+          nearest = point;
+          nearestCell = cell;
+        }
+      }
+      if (segmentCovered) covered += 1;
+    }
+
+    if (covered > 0 && nearest && nearestCell !== null) {
+      candidates.push({
+        route,
+        roadNumber: segments[0]?.roadNumber ?? null,
+        segments: covered,
+        cell: nearestCell,
+        sample: nearest,
+        sampledKm: nearestKm,
+      });
+    }
+  }
+
+  /*
+   * One lookup per distinct cell, shared by every route whose sample lands in
+   * it. Cells are taken nearest-first: for a deposit that decays along the
+   * plume axis those are the heaviest, and asking about all of them is the
+   * request count the mask exists to avoid.
+   */
+  const cells = new Map<number, Candidate[]>();
+  for (const candidate of candidates.sort((a, b) => a.sampledKm - b.sampledKm)) {
+    const existing = cells.get(candidate.cell);
+    if (existing) existing.push(candidate);
+    else cells.set(candidate.cell, [candidate]);
+  }
+
+  const sampled = [...cells.entries()].slice(0, MAX_SAMPLED_CELLS);
+
+  const values = new Map<number, { value: number; at: string } | null>(
+    await Promise.all(
+      sampled.map(async ([cell, members]): Promise<[number, { value: number; at: string } | null]> => {
+        const representative = members[0] as Candidate;
+        const lookup = await getDispersionPoint(
+          runId,
+          representative.sample.latitude,
+          representative.sample.longitude,
+        );
+        if (!lookup.ok) return [cell, null];
+
+        const series = lookup.series.find(
+          (item) =>
+            item.layer.dispersionType === layer.dispersionType &&
+            item.layer.altitude === layer.altitude &&
+            item.layer.altitudeUnit === layer.altitudeUnit,
+        );
+        return [cell, series ? peakOf(series) : null];
+      }),
+    ),
+  );
+
+  // A share alongside the figure: eight rows are compared by bar length far
+  // faster than by reading eight numbers.
+  const largest = Math.max(0, ...[...values.values()].map((peak) => peak?.value ?? 0));
+
+  const exposed: RoadExposure[] = sampled
+    .flatMap(([cell, members]) => {
+      const peak = values.get(cell) ?? null;
+      // Nearest first within a cell, so the two kept are the ones closest to
+      // the source rather than whichever the network listed first.
+      return members.slice(0, MAX_ROUTES_PER_CELL).map((candidate) => ({
+        route: candidate.route,
+        roadNumber: candidate.roadNumber,
+        segments: candidate.segments,
+        sampledKm: candidate.sampledKm,
+        peak: peak?.value ?? null,
+        share: peak && largest > 0 ? peak.value / largest : null,
+        peakAt: peak?.at ?? null,
+      }));
+    })
+    /*
+     * The footprint said this cell holds something and the model, asked at a
+     * point inside it, says nothing. The point is the only evidence there is
+     * about that route, so it is believed over the cell.
+     */
+    .filter((route) => route.peak === null || route.peak > 0)
+    .sort((a, b) => (b.share ?? -1) - (a.share ?? -1))
+    .slice(0, MAX_EXPOSED_ROUTES);
 
   const result: DispersionExposure = {
     runId,
     layer,
-    stations: exposed,
-    checked: stations.length,
+    routes: exposed,
+    covered: candidates.length,
+    checked: routes.size,
     unavailable: false,
   };
 

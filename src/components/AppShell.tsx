@@ -619,7 +619,8 @@ export function AppShell({
             unavailable: point.unavailable,
           }}
           exposure={{
-            stations: exposure.stations,
+            routes: exposure.routes,
+            covered: exposure.covered,
             layer: exposure.layer,
             checked: exposure.checked,
             loading: exposure.loading,

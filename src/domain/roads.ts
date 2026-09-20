@@ -105,3 +105,47 @@ export function conditionSeverity(status: string): number {
   if (status.startsWith("Fært fjallabílum")) return 1;
   return 0;
 }
+
+/**
+ * A stretch of road, reduced to the line it follows.
+ *
+ * Deliberately not GeoJSON and deliberately lean: this is server-side
+ * geometry used to test routes against a modelled footprint, and none of it
+ * is ever sent to the browser. Only the names that matched are.
+ *
+ * `points` is generalised by the service to about two kilometres, which is
+ * well inside the seven-kilometre cells of the rasters it is tested against.
+ */
+export type RoadSegmentLine = {
+  /** `IDBUTUR`, the same segment key the condition feeds use. */
+  id: number;
+  /** Route name, e.g. "Grindavíkurvegur". */
+  name: string | null;
+  roadNumber: string | null;
+  points: Array<{ latitude: number; longitude: number }>;
+};
+
+/**
+ * One route a modelled plume reaches.
+ *
+ * The figure is the model's own value at **one sampled point** on the route,
+ * not along the whole of it: asking the per-location endpoint at every vertex
+ * of every route would be thousands of requests. `sampledKm` says how far
+ * that point is from the source so the reader knows what was measured, and a
+ * long route may well be heavier somewhere else along it.
+ */
+export type RoadExposure = {
+  /** Route name as Vegagerðin writes it. */
+  route: string;
+  roadNumber: string | null;
+  /** How many of this route's segments the footprint covers. */
+  segments: number;
+  /** Distance from the modelled source to the sampled point, km. */
+  sampledKm: number;
+  /** Model value at the sampled point, in the layer's unit. Null if unavailable. */
+  peak: number | null;
+  /** This route's value as a fraction of the largest listed, in (0, 1]. */
+  share: number | null;
+  /** When the model's value there peaks, ISO instant. */
+  peakAt: string | null;
+};

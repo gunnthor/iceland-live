@@ -19,7 +19,7 @@
  * upstream that pushed it over would otherwise silently truncate the layer.
  */
 
-import type { RoadConditionSegment } from "@/domain/roads";
+import type { RoadConditionSegment, RoadSegmentLine } from "@/domain/roads";
 import { simplifyFeatureCollection } from "@/lib/simplify";
 import {
   ProviderError,
@@ -172,6 +172,147 @@ export class VegagerdinRoadGeometryProvider {
 
     return {
       data: normalizeRoadConditionLayer(payload),
+      meta: {
+        providerId: this.id,
+        freshness: "live",
+        fetchedAt: new Date().toISOString(),
+        attribution: this.attribution,
+      },
+    };
+  }
+}
+
+/**
+ * The whole road network as line work, without condition.
+ *
+ * ## Why the whole of it
+ *
+ * `fetchNotClear` is right for the map layer — a uniformly green country says
+ * nothing — but wrong for asking which routes a modelled plume reaches. A
+ * road that is perfectly clear is exactly the one worth telling someone about
+ * if ash is going to land on it, and filtering by condition would make it
+ * invisible.
+ *
+ * ## Pagination and generalisation
+ *
+ * The service caps a response at 1,000 records and there are about 1,565
+ * segments, so this pages with `resultOffset`. `maxAllowableOffset` asks the
+ * server to generalise to roughly two kilometres, which keeps the payload near
+ * 330 KB and is well inside the seven-kilometre cells the lines are tested
+ * against. It is fetched server-side, cached for a day, and never sent to a
+ * browser — the line work changes on the order of roadworks, unlike the
+ * conditions laid over it.
+ */
+const PAGE_SIZE = 1000;
+const MAX_PAGES = 6;
+/** Degrees, since the output is WGS84. About two kilometres. */
+const GENERALISE_DEGREES = 0.02;
+
+export function normalizeRoadLines(payload: unknown): RoadSegmentLine[] {
+  const collection = payload as GeoJSON.FeatureCollection | undefined;
+  if (!collection || !Array.isArray(collection.features)) return [];
+
+  const lines: RoadSegmentLine[] = [];
+
+  for (const feature of collection.features) {
+    const geometry = feature.geometry;
+    if (!geometry) continue;
+
+    const p = (feature.properties ?? {}) as Record<string, unknown>;
+    const id = num(p.IDBUTUR);
+    if (id === null) continue;
+
+    // LineString and MultiLineString both reduce to a flat list of positions;
+    // nothing here cares which part of a route a vertex belongs to.
+    const positions: Array<{ latitude: number; longitude: number }> = [];
+    const collect = (coords: unknown): void => {
+      if (!Array.isArray(coords)) return;
+      if (typeof coords[0] === "number") {
+        const longitude = coords[0] as number;
+        const latitude = num(coords[1]);
+        if (latitude !== null && Number.isFinite(longitude)) {
+          positions.push({ latitude, longitude });
+        }
+        return;
+      }
+      for (const inner of coords) collect(inner);
+    };
+    collect((geometry as { coordinates?: unknown }).coordinates);
+
+    if (positions.length === 0) continue;
+
+    lines.push({
+      id,
+      name: str(p.NAFN_LEIDAR),
+      roadNumber: str(p.NRVEGUR),
+      points: positions,
+    });
+  }
+
+  return lines;
+}
+
+export class VegagerdinRoadNetworkProvider {
+  readonly id = "vegagerdin-road-network";
+  readonly attribution: ProviderAttribution = IRCA_PROVIDER_ATTRIBUTION;
+
+  async fetchAllSegments(): Promise<ProviderResult<RoadSegmentLine[]>> {
+    const segments: RoadSegmentLine[] = [];
+
+    for (let page = 0; page < MAX_PAGES; page += 1) {
+      const url = new URL(QUERY_URL);
+      url.searchParams.set("where", "1=1");
+      url.searchParams.set("outFields", "IDBUTUR,NAFN_LEIDAR,NRVEGUR");
+      url.searchParams.set("returnGeometry", "true");
+      url.searchParams.set("outSR", "4326");
+      url.searchParams.set("geometryPrecision", "4");
+      url.searchParams.set("maxAllowableOffset", String(GENERALISE_DEGREES));
+      url.searchParams.set("resultOffset", String(page * PAGE_SIZE));
+      url.searchParams.set("f", "geojson");
+
+      let response: Response;
+      try {
+        response = await fetch(url, {
+          signal: AbortSignal.timeout(40_000),
+          headers: {
+            accept: "application/json",
+            "user-agent": "IcelandLive/0.1 (+https://live.gunnthor.is)",
+          },
+          // The line work changes on the order of roadworks.
+          next: { revalidate: 24 * 60 * 60 },
+        });
+      } catch (cause) {
+        throw new ProviderError("network", "Could not reach the Vegagerðin road service.", {
+          cause,
+        });
+      }
+
+      if (!response.ok) {
+        throw new ProviderError(
+          "http",
+          `Vegagerðin road service responded ${response.status} for the network.`,
+          { status: response.status },
+        );
+      }
+
+      const payload = (await response.json()) as unknown;
+      const asError = payload as { error?: { message?: string } };
+      if (asError?.error) {
+        throw new ProviderError(
+          "http",
+          `Vegagerðin road service rejected the network query: ${asError.error.message ?? "unknown"}`,
+        );
+      }
+
+      const page_ = normalizeRoadLines(payload);
+      segments.push(...page_);
+
+      // The last page is the one the service did not have to truncate.
+      if (!(payload as { exceededTransferLimit?: boolean })?.exceededTransferLimit) break;
+    }
+
+    return {
+      data: segments,
       meta: {
         providerId: this.id,
         freshness: "live",

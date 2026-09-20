@@ -679,30 +679,41 @@ next to the curve — not on the same axes, because a model of an eruption that
 is not happening and a measurement of the air as it is are not two versions of
 one quantity.
 
-**Its deposit figures are a thousand times their own label, and are therefore
-never quoted.** Compared against IMO's own published colour scale at six
-coordinates on a live run, matching the raster's instant rather than a peak
-(`src/server/units-probe.integration.ts` reproduces it):
+**Its values are not in the units its series names claim, and their own
+viewer says so.** A deposit series named `0m Ash kg/m2` returns about 15,000
+at a coordinate their raster colours as the `10 kg/m²` band. Read literally
+that is fifty metres of ash. The dispersion viewer's own source resolves it:
 
-| layer | IMO's raster band | per-location value | verdict |
-|---|---|---|---|
-| `5m Ash g/m3` | top band, `1 g/m³` | 1.72, 3.09 | agrees |
-| `5m Ash g/m3` | transparent | 0.00000 | agrees |
-| `0m Ash kg/m2` | `10 kg/m²` | 15,094 · 41,205 · 26,653 | ×1000 out |
-| `0m Ash kg/m2` | `1 kg/m²` | 2,293 · 2,618 | ×1000 out |
+```js
+if ("name" === u && "kg/m2" === r[c].name.slice(-5))
+    r[c].y[f] = r[c].y[f] / 1e3;        // deposit: grams, labelled kilograms
+else if ("calpuff" === u) {
+    r[c].y[f] = 1e6 * r[c].y[f];        // gas: grams per m³, shown as µg/m³
+    r[c].name += " μg/m3"
+}
+```
 
-Dividing by a thousand puts every deposit sample back inside the band IMO drew
-it in, which is what grams reported as kilograms looks like — but inferring a
-unit correction from six samples against a scale that reports only decades
-would be inventing a number, and printing the figure unchanged puts fifty
-metres of ash on screen. So deposit is used for **ordering**, where a constant
-factor cancels, and never shown; concentration is shown, because it was
-checked and it holds. `isQuotable` is the one place that decides.
+So deposit arrives in g/m², the gas species arrive in g/m³, and airborne ash —
+which their viewer does not touch — arrives in the unit it names. `scaleFor`
+applies exactly those three factors at the edge, so nothing downstream ever
+holds a figure in the wrong unit.
 
-The comparison had to be made at the raster's own instant. Deposit accumulates,
-so its last frame is its maximum; concentration comes and goes, and comparing
-a final frame against an earlier peak made the airborne layer look wrong when
-it was the comparison that was.
+This was found the other way round first, by comparing values against the
+colour IMO's own raster paints at the same coordinate
+(`src/server/units-probe.integration.ts`, which reproduces it on whatever run
+is current). Dividing deposit by a thousand put every sample, across four
+decades, back inside the band IMO drew it in; airborne concentration agreed
+untouched. Two independent lines of evidence for the same three factors.
+
+Until the viewer source was found, the only defensible thing was to rank by
+those figures and refuse to print them — which is how the first version of
+this feature shipped. Worth recording, because for a while the honest answer
+was the smaller feature.
+
+One trap in the comparison: it has to be made at the raster's own instant.
+Deposit accumulates, so its last frame is its maximum; concentration comes and
+goes, and comparing a final frame against an earlier peak made the airborne
+layer look wrong when it was the comparison that was.
 
 Three other things about that endpoint are worth writing down:
 
@@ -737,10 +748,30 @@ being asked for something it cannot give:
    axes), decoded, and read for **one bit per pixel** — the alpha channel,
    meaning "the model puts something here". No colour is translated into a
    concentration; that would be a guess about a stepped, resampled scale.
-2. **The model says how much.** Stations the mask keeps are then asked of the
-   per-location endpoint. This is what makes the whole thing bounded: 200-odd
-   road-weather stations usually reduce to a handful before anything is asked.
-3. **Only the ordering is published**, for the reason in the table above.
+2. **Routes are matched against it**, not points that happen to sit on roads.
+   The whole network — about 1,565 segments over some 700 named routes — is
+   fetched separately and cached for a day, because filtering by condition
+   would hide exactly the clear road that ash is about to land on. A route is
+   reached when any vertex of any of its segments lands in a covered cell;
+   vertices are ~2 km apart after the service's generalisation and cells are
+   ~7 km, so a segment cannot cross a covered cell without putting a vertex
+   in it.
+3. **Routes are grouped into model cells before anything is asked.** A cell is
+   about seven kilometres across, so the roads around a vent all land in one
+   or two of them. Without grouping, eight requests bought eight answers about
+   the same place — and Grindavíkurvegur, sixteen kilometres out, was
+   truncated off the end. Sixteen cells are sampled and at most two routes are
+   listed per cell, so the list spans the plume instead of crowding one spot.
+4. **The model says how much**, at one sampled point per cell: the covered
+   point nearest the source. `sampledKm` says which point was measured,
+   because a long route may be heavier somewhere else along it.
+
+**"Covered" is reach, not severity.** The raster is drawn down to IMO's
+lowest band, a hundredth of a kilogram per square metre, so a day after a
+10 km column nearly every road in Iceland is technically covered — 672 of 702
+on a live run. The panel leads with the routes it lists and gives that number
+underneath with what it means, because "672 of 702 routes" as a headline is
+true and reads as a catastrophe.
 
 **Row 0 is the northern edge.** That is checked rather than assumed:
 `src/server/orientation-probe.integration.ts` reads the mask at a scatter of
@@ -797,7 +828,8 @@ src/
 │   ├── imo/             client · quakes · detail · volcanoes · CAP · EPOS
 │   │                    dispersion (catalogue + run records)
 │   ├── gis/             WFS client · Reykjanes layers (lava, barriers, graben)
-│   ├── vegagerdin/      road cameras · road weather · road condition geometry
+│   ├── vegagerdin/      road cameras · road weather · road conditions
+│   │                    road network line work
 │   ├── ust/             air quality
 │   └── fixtures/        Offline snapshot provider
 │
@@ -817,6 +849,7 @@ src/
 │   ├── png-alpha.ts     alpha channel only: "is anything here"
 │   ├── camera-recorder.ts  polls a derived watch list on a schedule
 │   ├── watch-focus.ts   the ladder deciding where to point it
+│   ├── road-network.ts  the line work, cached for a day
 │   ├── dispersion.ts    current dispersal runs and per-location series
 │   ├── environment.ts   air quality + roads
 │   └── webcams.ts
@@ -1105,13 +1138,13 @@ the code is written to make that hard to forget.
   the last hour of real air. Shared axes invite subtraction, and there is
   nothing here to subtract. The model gets a curve, the measurement gets a
   number, each labelled for what it is.
-- **A figure whose units do not check out is not printed.** IMO's per-location
-  deposit values come back about a thousand times their own label. Neither
-  silently correcting them nor printing them is acceptable, so they are used
-  for ordering — where a constant factor cancels — and never shown, while the
-  concentration figures, which were checked against the same scale and held,
-  are. `isQuotable` is the one place that decides, and the comparison behind it
-  is a runnable test.
+- **A unit correction has to come from the source, not from us.** IMO's
+  per-location values are not in the units their series names claim. For a
+  while the only defensible response was to rank by them and refuse to print
+  them, because a factor inferred from a handful of samples is a number we
+  invented. The factors now applied are IMO's own, lifted from their viewer's
+  source, and corroborated independently against their published colour scale.
+  `scaleFor` is the one place that holds them.
 - **A band marks a period, not a claim about it.** The shaded stretches under
   the charts are the periods the observations' own sentences describe, clipped
   to what is on screen. Two things overlapping in time is not evidence that one
@@ -1235,17 +1268,25 @@ that is where upstream reality meets our assumptions.
   which "repeated M2.0+ events" always does, because that is what it counts
   over — gets no band at all, since a wash over every bar distinguishes
   nothing.
-- **The road list is footprint, not forecast.** It says which road-weather
-  stations a scenario's modelled deposit reaches and ranks them; it says
-  nothing about whether a road would be passable, and the eruption behind it is
-  not happening. Road-weather stations are also a sample of the network, not
-  the roads themselves — a route between two stations is not represented.
+- **The road list is footprint, not forecast.** It says which routes a
+  scenario's modelled deposit reaches and ranks them; it says nothing about
+  whether a road would be passable, and the eruption behind it is not
+  happening.
+- **Each road figure is one point on a route.** The covered point nearest the
+  source, whose distance is shown. Asking at every vertex of every route would
+  be thousands of requests, so a long route may be heavier somewhere else
+  along it than the figure says.
 - **The recorder's ladder can still be pointed at the wrong thing.** It relays
   official status where there is any and falls back to seismicity where there
   is not, which is better than a frozen list but is not a hazard model.
-- **The object-store backend is unproven in production.** Its signing matches
-  AWS's documented worked example and its operations pass against a local
-  signature-checking server; it has not been run against a real bucket.
+- **The object-store backend has never written to a real bucket.** What it
+  has passed: AWS's own documented worked example for the signature, a local
+  server that recomputes and verifies every signature, and a live round trip
+  to `s3.amazonaws.com` where the real service answered `InvalidAccessKeyId` —
+  meaning it parsed the credential scope, the signed-header list and the dates
+  and objected only to the key, which a malformed header does not manage
+  (`AuthorizationHeaderMalformed`, 400). What remains unproven is a PUT
+  landing, a GET returning it, and a listing paging.
 - **A dispersal run is a scenario, not a prediction.** Every one of them models
   an eruption that is, on almost every day, not happening. Nothing published
   distinguishes a contingency run from one produced for a real event, so this
@@ -1292,21 +1333,22 @@ that is where upstream reality meets our assumptions.
 
 **Next up**
 
-1. **Ask IMO about the deposit units.** The per-location endpoint disagrees
-   with their own published scale by a factor of a thousand, which is almost
-   certainly grams labelled as kilograms. Until somebody there confirms it,
-   this product ranks by those figures and refuses to print them — and a
-   confirmation would turn a bar chart back into numbers. This is a question
-   for a person, not a commit.
-2. **Run the object store against a real bucket.** The backend is written and
-   its signing matches AWS's documented example, but "passes a local
-   signature-checking server" and "works against R2" are different claims and
-   only one of them has been earned.
-3. **Road segments, not road stations.** The exposure list uses road-weather
-   stations because they are points with names, but the thing a reader cares
-   about is a route. The road-condition geometry already on the map has the
-   line work; testing those lines against the footprint instead of a scatter
-   of stations would say "Grindavíkurvegur" rather than "a station on it".
+1. **Let the reader ask about a place.** The dispersal panel evaluates a run
+   at monitoring stations and at road routes, both chosen for them. Clicking
+   the map would answer "what does this scenario put *here*" for a farm, a
+   campsite or a road junction that is on no list. The endpoint already takes
+   a coordinate; what it needs is a click target that does not fight with
+   selecting an earthquake.
+2. **A frame that is worth keeping.** The reel stores every fetch, which
+   during a still night is thirty near-identical pictures of a dark road. A
+   cheap difference between consecutive frames would let the store keep the
+   ones where something changed and spend its budget on cameras that are
+   showing something.
+3. **Say what the deposit means in depth.** IMO's own legend gives the
+   equivalence — 1 kg/m² is about a millimetre — so "43 kg/m²" could read as
+   "about 4 cm" without anything being invented. It is their conversion, not
+   ours, and it is the difference between a number and a picture for most
+   readers.
 
 **Later**
 

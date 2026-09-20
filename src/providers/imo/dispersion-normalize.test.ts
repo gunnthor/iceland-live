@@ -14,8 +14,8 @@ import {
   defaultLayer,
   frameTimes,
   groundLayer,
-  isQuotable,
   legendFor,
+  scaleFor,
   parseSeriesLayer,
   peakOf,
   toRasterTime,
@@ -387,17 +387,29 @@ describe("parseSeriesLayer", () => {
   });
 });
 
-describe("unitFor", () => {
-  it("takes the unit from the type where the type carries one", () => {
-    expect(unitFor("Ash kg/m2")).toBe("kg/m\u00b2");
-    expect(unitFor("Ash g/m3")).toBe("g/m\u00b3");
+describe("scaleFor", () => {
+  /*
+   * These factors are IMO's own. Their dispersion viewer applies exactly
+   * these to the same payload before plotting it: deposit divided by 1e3,
+   * the gas species multiplied by 1e6 and relabelled µg/m³, airborne ash
+   * left alone.
+   */
+  it("divides deposit by a thousand, as their viewer does", () => {
+    expect(scaleFor("Ash kg/m2")).toEqual({ factor: 1 / 1000, unit: "kg/m\u00b2" });
   });
 
-  it("falls back to IMO's own CALPUFF scale for the gas species", () => {
-    // The EPOS catalogue reports µg/m³ for the tephra products too, which
-    // contradicts their series names, so it is not the source used here.
+  it("leaves airborne ash alone", () => {
+    expect(scaleFor("Ash g/m3")).toEqual({ factor: 1, unit: "g/m\u00b3" });
+  });
+
+  it("converts the gas species from g/m3 to µg/m3", () => {
+    expect(scaleFor("SO2")).toEqual({ factor: 1e6, unit: "\u00b5g/m\u00b3" });
+    expect(scaleFor("SO4")).toEqual({ factor: 1e6, unit: "\u00b5g/m\u00b3" });
+  });
+
+  it("reports the unit a series is in after scaling", () => {
+    expect(unitFor("Ash kg/m2")).toBe("kg/m\u00b2");
     expect(unitFor("SO2")).toBe("\u00b5g/m\u00b3");
-    expect(unitFor("SO4")).toBe("\u00b5g/m\u00b3");
   });
 });
 
@@ -440,6 +452,39 @@ describe("normalizePointSeries", () => {
     ]);
     expect(series[0]?.unit).toBe("g/m\u00b3");
     expect(series[0]?.layer.altitude).toBe(5);
+  });
+
+  it("scales each series into the unit it is actually in", () => {
+    /*
+     * The endpoint's deposit values are grams under a name saying kilograms.
+     * Left unscaled, a real run reads 55,000 kg/m² at Grindavík — fifty metres
+     * of ash — which is how this was noticed.
+     */
+    const deposit = normalizePointSeries([
+      {
+        name: "0m Ash kg/m2",
+        x: ["2026-09-19T13:00:00", "2026-09-19T14:00:00"],
+        y: [15094.7, 41205.2],
+      },
+    ]);
+    expect(deposit[0]?.unit).toBe("kg/m\u00b2");
+    // Compared loosely: 1/1000 is not exactly representable, so the product
+    // lands a femtogram away. That matters to `toEqual` and to nothing else.
+    expect(deposit[0]?.points[0]?.value).toBeCloseTo(15.0947, 6);
+    expect(deposit[0]?.points[1]?.value).toBeCloseTo(41.2052, 6);
+
+    const gas = normalizePointSeries([
+      { name: "0m SO2", x: ["2025-09-18T00:00:00", "2025-09-18T01:00:00"], y: [0.0008, 0.0012] },
+    ]);
+    expect(gas[0]?.unit).toBe("\u00b5g/m\u00b3");
+    expect(gas[0]?.points[0]?.value).toBeCloseTo(800, 6);
+    expect(gas[0]?.points[1]?.value).toBeCloseTo(1200, 6);
+
+    // Airborne ash is the one their viewer does not touch.
+    const airborne = normalizePointSeries([
+      { name: "5m Ash g/m3", x: ["2026-09-19T13:00:00", "2026-09-19T14:00:00"], y: [1.07, 3.09] },
+    ]);
+    expect(airborne[0]?.points.map((point) => point.value)).toEqual([1.07, 3.09]);
   });
 
   it("keeps zeros and drops nulls", () => {
@@ -503,25 +548,6 @@ describe("peakOf", () => {
       { name: "5m Ash g/m3", x: ["2026-09-19T13:00:00", "2026-09-19T14:00:00"], y: [0, 0] },
     ])[0]!;
     expect(peakOf(flat)).toBeNull();
-  });
-});
-
-describe("isQuotable", () => {
-  it("allows the layers whose units were checked and held", () => {
-    // Airborne concentration was compared against IMO's own colour scale at
-    // six coordinates and agreed, including transparent cells returning zero.
-    expect(isQuotable({ dispersionType: "Ash g/m3", altitude: 5, altitudeUnit: "m" })).toBe(true);
-    expect(isQuotable({ dispersionType: "Ash g/m3", altitude: 300, altitudeUnit: "hPa" })).toBe(
-      true,
-    );
-    expect(isQuotable({ dispersionType: "SO2", altitude: 0, altitudeUnit: "m" })).toBe(true);
-  });
-
-  it("refuses the deposit layer", () => {
-    // A cell IMO colours "10 kg/m²" comes back as about 15,000 under a series
-    // named kg/m2. Printing that unchanged is fifty metres of ash; dividing by
-    // a thousand is inventing a correction. So it is ranked, never quoted.
-    expect(isQuotable({ dispersionType: "Ash kg/m2", altitude: 0, altitudeUnit: "m" })).toBe(false);
   });
 });
 

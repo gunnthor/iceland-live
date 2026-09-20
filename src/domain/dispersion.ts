@@ -207,17 +207,49 @@ export type DispersionPointSeries = {
 };
 
 /**
- * The unit a dispersion type is reported in.
+ * How a per-location series has to be scaled, and what it is then in.
  *
- * Taken from the type string where it carries one — "Ash g/m3" says so — and
- * otherwise from IMO's own CALPUFF legend, which is published in µg/m³. The
- * EPOS catalogue's `units` field is not used: it reports µg/m³ for the tephra
- * products too, which contradicts their own series names.
+ * ## Where this comes from
+ *
+ * IMO's dispersion API returns per-location values that are **not** in the
+ * units their series names claim. This is not an inference: their own viewer
+ * applies these exact conversions before plotting the same payload —
+ *
+ * ```js
+ * if ("name" === u && "kg/m2" === r[c].name.slice(-5))
+ *     r[c].y[f] = r[c].y[f] / 1e3;        // deposit
+ * else if ("calpuff" === u) {
+ *     r[c].y[f] = 1e6 * r[c].y[f];        // gas
+ *     r[c].name += " μg/m3"
+ * }
+ * ```
+ *
+ * — so a deposit series named `kg/m2` arrives in grams per square metre, and
+ * a gas series arrives in grams per cubic metre while being displayed as
+ * micrograms. Airborne ash, which their viewer leaves alone, arrives in the
+ * unit it names.
+ *
+ * ## Why it was worth chasing
+ *
+ * Before this was found, the raw deposit figure read as 55,000 kg/m² — fifty
+ * metres of ash — and the only defensible thing to do was rank by it and
+ * refuse to print it. Two independent checks then agreed: comparing values
+ * against the colour IMO's own raster paints at the same coordinate put every
+ * sample, across four decades, back in its band after dividing by a thousand
+ * (`src/server/units-probe.integration.ts`), and their viewer source says to
+ * divide by exactly that. With both, the numbers can be shown.
  */
+export function scaleFor(dispersionType: string): { factor: number; unit: string } {
+  // Their viewer branches on model; these three names are what each produces,
+  // so branching on the name is the same rule written the other way round.
+  if (/kg\/m2$/i.test(dispersionType)) return { factor: 1 / 1000, unit: "kg/m\u00b2" };
+  if (/\bg\/m3$/i.test(dispersionType)) return { factor: 1, unit: "g/m\u00b3" };
+  return { factor: 1e6, unit: "\u00b5g/m\u00b3" };
+}
+
+/** The unit a series is in once `scaleFor` has been applied. */
 export function unitFor(dispersionType: string): string {
-  if (/kg\/m2$/i.test(dispersionType)) return "kg/m\u00b2";
-  if (/\bg\/m3$/i.test(dispersionType)) return "g/m\u00b3";
-  return "\u00b5g/m\u00b3";
+  return scaleFor(dispersionType).unit;
 }
 
 /**
@@ -272,10 +304,9 @@ export function peakOf(
 /**
  * One road-weather station a run reaches.
  *
- * No quantity, because the layer this is built on is the one whose figures
- * cannot be quoted — see `isQuotable`. The stations are **ordered** by the
- * model's own values, which is a ratio and so survives a constant factor,
- * and `share` expresses that ordering without asserting a magnitude.
+ * Both a figure and a share: the figure because it means something once
+ * `scaleFor` has been applied, and the share because a bar is how a list of
+ * eight is read at a glance.
  */
 export type DepositExposure = {
   stationId: number;
@@ -285,10 +316,12 @@ export type DepositExposure = {
   /** Great-circle distance from the modelled source, km. */
   distanceKm: number;
   /**
-   * This station's modelled amount as a fraction of the largest among those
-   * listed, in (0, 1]. Null when the per-location lookup failed — the station
-   * is still listed, because the footprint already says the run reaches it.
+   * Highest modelled amount at this station across the run's hours, in the
+   * layer's unit. Null when the per-location lookup failed — the station is
+   * still listed, because the footprint already says the run reaches it.
    */
+  peak: number | null;
+  /** This station's amount as a fraction of the largest listed, in (0, 1]. */
   share: number | null;
   /** When the model's amount here peaks, ISO instant. */
   peakAt: string | null;
@@ -310,38 +343,6 @@ export function groundLayer(run: DispersionRun): DispersionLayer | null {
       .filter((layer) => layer.altitudeUnit === "m")
       .sort((a, b) => a.altitude - b.altitude)[0] ?? null
   );
-}
-
-/**
- * Whether a layer's per-location figures can be printed as they arrive.
- *
- * ## The finding
- *
- * IMO's per-location endpoint and IMO's own published legend were compared at
- * six coordinates on a live run, matching the raster's instant rather than a
- * peak (`src/server/units-probe.integration.ts` reproduces it):
- *
- * - **Airborne concentration** agrees. A cell their raster colours as the top
- *   "1 g/m³" band returns 1.7 and 3.1; transparent cells return exactly 0.
- * - **Ground deposit** does not. A cell coloured "10 kg/m²" returns about
- *   15,000, and one coloured "1 kg/m²" returns about 2,300 — under a series
- *   named `0m Ash kg/m2`. Dividing by a thousand puts every sample back in
- *   the band IMO drew it in, which is what grams reported as kilograms would
- *   look like.
- *
- * ## What is done about it
- *
- * Not the division. Inferring a unit correction from six samples against a
- * scale that reports only decades would be inventing a number, and this
- * codebase does not do that with someone else's data. Printing the figure
- * unchanged is worse: "55,000 kg/m²" is fifty metres of ash.
- *
- * So deposit figures are used for ordering, where a constant factor cancels,
- * and never shown. Concentration figures are shown, because they were checked
- * and they hold.
- */
-export function isQuotable(layer: DispersionLayer): boolean {
-  return !layer.dispersionType.endsWith("kg/m2");
 }
 
 /** Stable key for a layer within a run, used in the URL and as a React key. */
