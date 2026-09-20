@@ -13,6 +13,8 @@ import {
 import {
   defaultLayer,
   frameTimes,
+  groundLayer,
+  isQuotable,
   legendFor,
   parseSeriesLayer,
   peakOf,
@@ -501,5 +503,56 @@ describe("peakOf", () => {
       { name: "5m Ash g/m3", x: ["2026-09-19T13:00:00", "2026-09-19T14:00:00"], y: [0, 0] },
     ])[0]!;
     expect(peakOf(flat)).toBeNull();
+  });
+});
+
+describe("isQuotable", () => {
+  it("allows the layers whose units were checked and held", () => {
+    // Airborne concentration was compared against IMO's own colour scale at
+    // six coordinates and agreed, including transparent cells returning zero.
+    expect(isQuotable({ dispersionType: "Ash g/m3", altitude: 5, altitudeUnit: "m" })).toBe(true);
+    expect(isQuotable({ dispersionType: "Ash g/m3", altitude: 300, altitudeUnit: "hPa" })).toBe(
+      true,
+    );
+    expect(isQuotable({ dispersionType: "SO2", altitude: 0, altitudeUnit: "m" })).toBe(true);
+  });
+
+  it("refuses the deposit layer", () => {
+    // A cell IMO colours "10 kg/m²" comes back as about 15,000 under a series
+    // named kg/m2. Printing that unchanged is fifty metres of ash; dividing by
+    // a thousand is inventing a correction. So it is ranked, never quoted.
+    expect(isQuotable({ dispersionType: "Ash kg/m2", altitude: 0, altitudeUnit: "m" })).toBe(false);
+  });
+});
+
+describe("groundLayer", () => {
+  const run = mergeRun(
+    normalizeCatalogue([catalogueEntry()])[0]!,
+    normalizeSimulation(simulation())!,
+  )!;
+
+  it("uses deposit for tephra, since fallout is what settles on a road", () => {
+    expect(groundLayer(run)?.dispersionType).toBe("Ash kg/m2");
+  });
+
+  it("falls to the lowest near-surface layer when there is no deposit", () => {
+    // Gas runs produce no deposit; the same question asked of a substance
+    // that does not settle is its concentration at the ground.
+    const gas = {
+      ...run,
+      layers: [
+        { dispersionType: "SO2", altitude: 0, altitudeUnit: "m" as const },
+        { dispersionType: "SO4", altitude: 10, altitudeUnit: "m" as const },
+      ],
+    };
+    expect(groundLayer(gas)).toEqual({
+      dispersionType: "SO2",
+      altitude: 0,
+      altitudeUnit: "m",
+    });
+  });
+
+  it("returns null for a run with no layers at all", () => {
+    expect(groundLayer({ ...run, layers: [] })).toBeNull();
   });
 });

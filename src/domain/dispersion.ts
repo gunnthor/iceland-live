@@ -269,6 +269,81 @@ export function peakOf(
   return best;
 }
 
+/**
+ * One road-weather station a run reaches.
+ *
+ * No quantity, because the layer this is built on is the one whose figures
+ * cannot be quoted — see `isQuotable`. The stations are **ordered** by the
+ * model's own values, which is a ratio and so survives a constant factor,
+ * and `share` expresses that ordering without asserting a magnitude.
+ */
+export type DepositExposure = {
+  stationId: number;
+  stationName: string;
+  latitude: number;
+  longitude: number;
+  /** Great-circle distance from the modelled source, km. */
+  distanceKm: number;
+  /**
+   * This station's modelled amount as a fraction of the largest among those
+   * listed, in (0, 1]. Null when the per-location lookup failed — the station
+   * is still listed, because the footprint already says the run reaches it.
+   */
+  share: number | null;
+  /** When the model's amount here peaks, ISO instant. */
+  peakAt: string | null;
+};
+
+/**
+ * The layer used to ask "what does this run put on the ground here".
+ *
+ * Tephra deposit where the run produces it, since accumulated fallout is the
+ * thing with consequences for a road. Gas runs have no deposit, so the
+ * near-surface concentration stands in — the same question asked of a
+ * substance that does not settle.
+ */
+export function groundLayer(run: DispersionRun): DispersionLayer | null {
+  const deposit = run.layers.find((layer) => layer.dispersionType.endsWith("kg/m2"));
+  if (deposit) return deposit;
+  return (
+    run.layers
+      .filter((layer) => layer.altitudeUnit === "m")
+      .sort((a, b) => a.altitude - b.altitude)[0] ?? null
+  );
+}
+
+/**
+ * Whether a layer's per-location figures can be printed as they arrive.
+ *
+ * ## The finding
+ *
+ * IMO's per-location endpoint and IMO's own published legend were compared at
+ * six coordinates on a live run, matching the raster's instant rather than a
+ * peak (`src/server/units-probe.integration.ts` reproduces it):
+ *
+ * - **Airborne concentration** agrees. A cell their raster colours as the top
+ *   "1 g/m³" band returns 1.7 and 3.1; transparent cells return exactly 0.
+ * - **Ground deposit** does not. A cell coloured "10 kg/m²" returns about
+ *   15,000, and one coloured "1 kg/m²" returns about 2,300 — under a series
+ *   named `0m Ash kg/m2`. Dividing by a thousand puts every sample back in
+ *   the band IMO drew it in, which is what grams reported as kilograms would
+ *   look like.
+ *
+ * ## What is done about it
+ *
+ * Not the division. Inferring a unit correction from six samples against a
+ * scale that reports only decades would be inventing a number, and this
+ * codebase does not do that with someone else's data. Printing the figure
+ * unchanged is worse: "55,000 kg/m²" is fifty metres of ash.
+ *
+ * So deposit figures are used for ordering, where a constant factor cancels,
+ * and never shown. Concentration figures are shown, because they were checked
+ * and they hold.
+ */
+export function isQuotable(layer: DispersionLayer): boolean {
+  return !layer.dispersionType.endsWith("kg/m2");
+}
+
 /** Stable key for a layer within a run, used in the URL and as a React key. */
 export function layerKey(layer: DispersionLayer): string {
   return `${layer.dispersionType}|${layer.altitude}|${layer.altitudeUnit}`;

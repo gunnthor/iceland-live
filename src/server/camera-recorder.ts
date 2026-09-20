@@ -15,16 +15,13 @@
  *
  * Derived, not listed. A hard-coded set of camera identifiers would be a guess
  * frozen at the moment it was written: Vegagerðin renumbers and retires
- * cameras, and the interesting part of Iceland moves. The watch list is
- * instead "the sites nearest wherever the seismicity currently is", computed
- * from the same tally the interface ranks regions by — so a Reykjanes swarm
- * puts Reykjanes cameras on the list and a Norðurland swarm puts Norðurland
- * cameras on it, with nothing to maintain.
+ * cameras, and the interesting part of Iceland moves.
  *
- * When there is no seismicity at all to point at — which has not happened in
- * the record but is representable — it falls back to the map's default view,
- * because "no earthquakes anywhere" is not a reason to stop watching the
- * peninsula with the eruptions on it.
+ * Where to point is decided by `chooseFocus` — a precedence ladder running
+ * from official warnings through aviation colour codes to seismicity — and the
+ * watch list is the camera sites nearest whatever it picks. The rung that
+ * fired is reported, so "why is it looking there" always has an answer in
+ * words.
  *
  * ## Cost
  *
@@ -37,10 +34,12 @@
 import { filterByRange, tallyByRegion } from "@/analytics/stats";
 import type { WebcamSite, WebcamView } from "@/domain/webcam";
 import { sitesNearest } from "@/domain/webcam";
-import { DEFAULT_FOCUS } from "@/lib/geo";
 import { allowWebcamSource } from "@/providers/vegagerdin/webcam-provider";
+import { getActiveAlerts } from "./alerts";
 import { getEarthquakeSnapshot } from "./earthquakes";
 import { recordFrame, viewKeyFor, type RecordResult } from "./frame-store";
+import { chooseFocus, type WatchFocus } from "./watch-focus";
+import { getVolcanicSystems } from "./volcanoes";
 import { getWebcamSites } from "./webcams";
 
 /** Sites to watch. Each carries one to four views. */
@@ -60,13 +59,8 @@ const CONCURRENCY = 4;
 const FETCH_TIMEOUT_MS = 15_000;
 
 export type RecorderReport = {
-  /** Where the watch list was centred, and why. */
-  focus: {
-    latitude: number;
-    longitude: number;
-    /** The region whose activity chose this point, or null when it fell back. */
-    region: string | null;
-  };
+  /** Where the watch list was centred, which rung chose it, and what it matched. */
+  focus: WatchFocus;
   /** Camera views polled. */
   views: number;
   stored: number;
@@ -78,31 +72,40 @@ export type RecorderReport = {
 };
 
 /**
- * Where the activity is, as the interface computes it.
+ * Gathers what the ladder needs.
  *
- * The busiest region's mean event position — the same value the camera list
- * in the panel orders itself by, so the recorder and the reader are looking
- * at the same place.
+ * Each source is optional: a warning broker being unreachable should cost the
+ * recorder its first rung, not its run. Every one of these is already cached
+ * for the interface, so on a normal tick this is three cache reads.
  */
-async function activityFocus(): Promise<RecorderReport["focus"]> {
-  try {
-    const { quakes } = await getEarthquakeSnapshot();
-    const now = new Date();
-    const recent = filterByRange(quakes, new Date(now.getTime() - 86_400_000), now);
-    const busiest = tallyByRegion(recent).find((region) => region.centre !== null);
-    if (busiest?.centre) {
-      return { ...busiest.centre, region: busiest.region };
-    }
-  } catch (error) {
-    console.warn("[camera-recorder] could not read the earthquake snapshot", error);
-  }
+async function currentFocus(): Promise<WatchFocus> {
+  const [alerts, systems, regions] = await Promise.all([
+    getActiveAlerts()
+      .then((snapshot) => snapshot.alerts)
+      .catch((error: unknown) => {
+        console.warn("[camera-recorder] warnings unavailable", error);
+        return [];
+      }),
+    getVolcanicSystems()
+      .then((snapshot) => snapshot.systems)
+      .catch((error: unknown) => {
+        console.warn("[camera-recorder] volcano status unavailable", error);
+        return [];
+      }),
+    getEarthquakeSnapshot()
+      .then(({ quakes }) => {
+        const now = new Date();
+        return tallyByRegion(
+          filterByRange(quakes, new Date(now.getTime() - 86_400_000), now),
+        );
+      })
+      .catch((error: unknown) => {
+        console.warn("[camera-recorder] earthquake snapshot unavailable", error);
+        return [];
+      }),
+  ]);
 
-  const { bounds } = DEFAULT_FOCUS;
-  return {
-    latitude: (bounds.north + bounds.south) / 2,
-    longitude: (bounds.east + bounds.west) / 2,
-    region: null,
-  };
+  return chooseFocus({ alerts, systems, regions });
 }
 
 /** The views to poll, nearest the focus first. */
@@ -159,7 +162,7 @@ async function pollView(view: WebcamView): Promise<RecordResult | "failed"> {
  */
 export async function recordWatchList(): Promise<RecorderReport> {
   const startedAt = Date.now();
-  const focus = await activityFocus();
+  const focus = await currentFocus();
 
   const report: RecorderReport = {
     focus,
@@ -220,7 +223,7 @@ export function startCameraRecorder(): { started: boolean; everyMs?: number } {
       if (report.stored > 0) {
         console.info(
           `[camera-recorder] stored ${report.stored} of ${report.views} views near ` +
-            `${report.focus.region ?? "the default view"}`,
+            `${report.focus.label ?? "the default view"} (${report.focus.reason})`,
         );
       }
     });

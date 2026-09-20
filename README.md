@@ -89,9 +89,10 @@ not built yet.
   "over 8 hours" is a thing you can see rather than reconstruct from two clocks.
 - **Dispersal simulations** — IMO's tephra and SO₂ dispersal runs, the raster laid
   over the map in Web Mercator with IMO's own colour scale, steppable hour by hour
-  across the forecast window, and evaluable at any monitoring station — IMO's own
+  across the forecast window, evaluable at any monitoring station — IMO's own
   numbers at that coordinate, beside what the instrument there is actually
-  measuring. **These model eruptions that are not happening**: IMO produces them
+  measuring — and reduced to the road-weather stations the run's own footprint
+  covers, ranked by how much the model puts at each. **These model eruptions that are not happening**: IMO produces them
   several times a day for selected volcanoes so the answer exists if one ever
   starts, and the panel says so before it lists anything.
 - **Quick-focus viewpoints** for Iceland, Reykjanes and Grindavík.
@@ -473,12 +474,32 @@ result.
 - **Best-effort, like the disk cache.** Every failure is swallowed and logged
   once. A recorder that can break the live image it is recording is worse than
   no recorder.
-- **Per instance.** On a platform like Vercel only `os.tmpdir()` is writable,
-  it is not shared between instances and it does not survive indefinitely, so
-  two readers may see different reels. That is acceptable for something
-  explicitly labelled "frames this server happens to hold" — and the viewer
-  says exactly that, including that a short reel means nobody was watching
-  rather than that the camera was down.
+- **Durable where it is configured to be.** Frames go through a backend
+  interface with two implementations: the local filesystem (the default, right
+  for a VPS with a mounted volume) and any S3-compatible object store. On
+  serverless the local path is per instance and temporary, so two readers may
+  see different reels; with an object store configured they see one.
+
+**State comes from a listing, not an index file.** The capture time is in the
+key, so listing the store *is* the index. With one process an index would
+merely be faster; with several sharing a bucket it is a correctness bug, since
+two instances that each load it, record, and write it back silently drop each
+other's frames. Putting the time in the key also makes writing idempotent
+across instances: the same picture always derives the same `Last-Modified`, so
+it always writes the same key.
+
+**The object-store backend carries no SDK.** Four operations are needed — PUT,
+GET, DELETE, LIST — and all four are plain HTTPS with a SigV4 signature, which
+`node:crypto` can produce in under a hundred lines. An SDK for this would
+multiply the project's dependency count several times over.
+
+Its honest status: the signing is checked against the worked example in AWS's
+own documentation — canonical request, string to sign and final signature all
+match published values — and the operations are exercised against a local
+server that recomputes and verifies every signature. **It has not been run
+against a real bucket.** The failure it is most designed to catch, a request
+signed in one form and sent in another, is exactly what that local server
+rejects.
 
 Keys are a SHA-256 prefix of the source URL, so nothing a caller sends names a
 path; `/api/webcams/frame` additionally checks a frame is indexed before
@@ -495,11 +516,30 @@ watch list is therefore polled on a schedule.
 
 Which cameras is *derived*, not listed. A hard-coded set of identifiers would
 be a guess frozen at the moment it was written — Vegagerðin renumbers and
-retires cameras, and the interesting part of Iceland moves. The watch list is
-the sites nearest wherever the seismicity currently is, computed from the same
-region tally the interface ranks by, so a Reykjanes swarm watches Reykjanes
-and a Norðurland swarm watches Norðurland with nothing to maintain. Four sites,
-twelve views maximum, four requests in flight; under half a megabyte a run.
+retires cameras, and the interesting part of Iceland moves. Four sites, twelve
+views maximum, four requests in flight; under half a megabyte a run.
+
+**Where to point** is `src/server/watch-focus.ts`, a precedence ladder rather
+than a weighted score. A score blending warnings, colour codes and event counts
+has to answer "why is it looking there" with arithmetic nobody can check; a
+ladder answers it with a sentence, and the recorder reports which rung fired.
+
+1. **A geological warning in force**, most serious first, placed at the mean of
+   its area's vertices.
+2. **A volcano at orange or red** on IMO's aviation scale.
+3. **The busiest seismic region**, which is where this started.
+4. **The default map view**, when there is nothing at all to point at.
+
+Two exclusions, both deliberate. **Weather warnings** are in force over large
+parts of Iceland most weeks, and a wind warning covering the south would hold
+the recorder there indefinitely; they matter for driving and are shown in the
+interface, but they are not a reason to stop watching a volcano. **Yellow
+aviation codes** mean "signs of elevated unrest", which Icelandic systems sit
+at for months or years — treating yellow as a trigger would pin the recorder
+to whichever system has been restless longest and never release it.
+
+Nothing on the ladder is a hazard judgement of ours: each rung relays someone
+else's published status, or counts events.
 
 Two ways to drive it, both calling the same function:
 
@@ -639,7 +679,32 @@ next to the curve — not on the same axes, because a model of an eruption that
 is not happening and a measurement of the air as it is are not two versions of
 one quantity.
 
-Three things about that endpoint are worth writing down:
+**Its deposit figures are a thousand times their own label, and are therefore
+never quoted.** Compared against IMO's own published colour scale at six
+coordinates on a live run, matching the raster's instant rather than a peak
+(`src/server/units-probe.integration.ts` reproduces it):
+
+| layer | IMO's raster band | per-location value | verdict |
+|---|---|---|---|
+| `5m Ash g/m3` | top band, `1 g/m³` | 1.72, 3.09 | agrees |
+| `5m Ash g/m3` | transparent | 0.00000 | agrees |
+| `0m Ash kg/m2` | `10 kg/m²` | 15,094 · 41,205 · 26,653 | ×1000 out |
+| `0m Ash kg/m2` | `1 kg/m²` | 2,293 · 2,618 | ×1000 out |
+
+Dividing by a thousand puts every deposit sample back inside the band IMO drew
+it in, which is what grams reported as kilograms looks like — but inferring a
+unit correction from six samples against a scale that reports only decades
+would be inventing a number, and printing the figure unchanged puts fifty
+metres of ash on screen. So deposit is used for **ordering**, where a constant
+factor cancels, and never shown; concentration is shown, because it was
+checked and it holds. `isQuotable` is the one place that decides.
+
+The comparison had to be made at the raster's own instant. Deposit accumulates,
+so its last frame is its maximum; concentration comes and goes, and comparing
+a final frame against an earlier peak made the airborne layer look wrong when
+it was the comparison that was.
+
+Three other things about that endpoint are worth writing down:
 
 - Outside the model grid it answers **200 with zeros**, not 404, so "not
   modelled" would arrive looking like "nothing will reach here". The server
@@ -659,6 +724,33 @@ Three things about that endpoint are worth writing down:
 scenarios ran daily through the Sundhnúkur eruption series and stop there; every
 current run is tephra (NAME). The code handles both identically and the panel
 simply lists what exists, so gas returns on its own when IMO resumes it.
+
+### Which roads a scenario reaches
+
+The ground-deposit layer is the one with consequences for a road, and IMO
+publishes it both as a raster and as a per-location series. Combining them
+answers "which routes does this scenario put ash on" without either source
+being asked for something it cannot give:
+
+1. **The raster says where.** The final deposit frame is fetched in plate
+   carrée (`srid=4326`, so the coordinate-to-pixel mapping is linear in both
+   axes), decoded, and read for **one bit per pixel** — the alpha channel,
+   meaning "the model puts something here". No colour is translated into a
+   concentration; that would be a guess about a stepped, resampled scale.
+2. **The model says how much.** Stations the mask keeps are then asked of the
+   per-location endpoint. This is what makes the whole thing bounded: 200-odd
+   road-weather stations usually reduce to a handful before anything is asked.
+3. **Only the ordering is published**, for the reason in the table above.
+
+**Row 0 is the northern edge.** That is checked rather than assumed:
+`src/server/orientation-probe.integration.ts` reads the mask at a scatter of
+coordinates and compares each against IMO's per-location model. Top-down
+agreed at 12 of 12; bottom-up at 9 of 12.
+
+The PNG decoder (`src/server/png-alpha.ts`) is about a page of code because
+`node:zlib` already does the hard part. It accepts only what IMO serves —
+8-bit RGBA, non-interlaced — and refuses anything else rather than guess,
+since a mis-decoded mask is confidently wrong in a way no mask is.
 
 ### Researched, architected for, not yet integrated
 
@@ -719,8 +811,12 @@ src/
 │   ├── deformation.ts   interferograms + GNSS network
 │   ├── region-history.ts  the year that baselines compare against
 │   ├── disk-cache.ts    best-effort accelerator for expensive derived data
-│   ├── frame-store.ts   bounded disk-backed reel of camera frames
+│   ├── frame-store.ts   bounded reel of camera frames, over a backend
+│   ├── frame-backend.ts    the backend seam (+ -local, -s3)
+│   ├── aws-sigv4.ts     request signing for S3-compatible stores
+│   ├── png-alpha.ts     alpha channel only: "is anything here"
 │   ├── camera-recorder.ts  polls a derived watch list on a schedule
+│   ├── watch-focus.ts   the ladder deciding where to point it
 │   ├── dispersion.ts    current dispersal runs and per-location series
 │   ├── environment.ts   air quality + roads
 │   └── webcams.ts
@@ -737,7 +833,8 @@ src/
 │   └── api/             /api/earthquakes[/:id] · /api/alerts · /api/volcanoes
 │                        /api/reykjanes · /api/insar[/image]
 │                        /api/webcams[/image|/reel|/frame] · /api/environment
-│                        /api/dispersion[/raster|/point] · /api/cron/cameras
+│                        /api/dispersion[/raster|/point|/exposure]
+│                        /api/cron/cameras
 │
 ├── components/
 │   ├── map/             MapView, base-style tuning, layer specs, GeoJSON builders
@@ -749,7 +846,7 @@ src/
 ├── hooks/           useEarthquakeData · useEarthquakeDetail · useAlerts
 │                  useReykjanesLayer · useDeformation · useWebcams
 │                  useEnvironment · useDispersion · useDispersionPoint
-│                  useUrlState · useNow · useMediaQuery
+│                  useDispersionExposure · useUrlState · useNow · useMediaQuery
 ├── lib/             time · format · geo · simplify
 └── instrumentation.ts   starts the in-process camera recorder, if enabled
 ```
@@ -835,6 +932,7 @@ on screen instead of an empty map. Concurrent callers share one in-flight fetch.
 | `/api/dispersion` | `s-maxage=900, swr=3600` | 15min / 6h |
 | `/api/dispersion/raster` | `max-age=31536000, immutable` | — (proxied, immutable) |
 | `/api/dispersion/point` | `s-maxage=3600, swr=21600` | 1h / 6h, 400-entry LRU |
+| `/api/dispersion/exposure` | `s-maxage=3600, swr=21600` | 1h / 6h; footprint 6h |
 | `/api/cron/cameras` | `no-store` | — (a trigger, not a read) |
 | `/api/environment` | `s-maxage=300, swr=900` | 5min / 1h |
 
@@ -1007,6 +1105,13 @@ the code is written to make that hard to forget.
   the last hour of real air. Shared axes invite subtraction, and there is
   nothing here to subtract. The model gets a curve, the measurement gets a
   number, each labelled for what it is.
+- **A figure whose units do not check out is not printed.** IMO's per-location
+  deposit values come back about a thousand times their own label. Neither
+  silently correcting them nor printing them is acceptable, so they are used
+  for ordering — where a constant factor cancels — and never shown, while the
+  concentration figures, which were checked against the same scale and held,
+  are. `isQuotable` is the one place that decides, and the comparison behind it
+  is a runnable test.
 - **A band marks a period, not a claim about it.** The shaded stretches under
   the charts are the periods the observations' own sentences describe, clipped
   to what is on screen. Two things overlapping in time is not evidence that one
@@ -1130,6 +1235,17 @@ that is where upstream reality meets our assumptions.
   which "repeated M2.0+ events" always does, because that is what it counts
   over — gets no band at all, since a wash over every bar distinguishes
   nothing.
+- **The road list is footprint, not forecast.** It says which road-weather
+  stations a scenario's modelled deposit reaches and ranks them; it says
+  nothing about whether a road would be passable, and the eruption behind it is
+  not happening. Road-weather stations are also a sample of the network, not
+  the roads themselves — a route between two stations is not represented.
+- **The recorder's ladder can still be pointed at the wrong thing.** It relays
+  official status where there is any and falls back to seismicity where there
+  is not, which is better than a frozen list but is not a hazard model.
+- **The object-store backend is unproven in production.** Its signing matches
+  AWS's documented worked example and its operations pass against a local
+  signature-checking server; it has not been run against a real bucket.
 - **A dispersal run is a scenario, not a prediction.** Every one of them models
   an eruption that is, on almost every day, not happening. Nothing published
   distinguishes a contingency run from one produced for a real event, so this
@@ -1176,23 +1292,21 @@ that is where upstream reality meets our assumptions.
 
 **Next up**
 
-1. **A watch list that follows hazard, not only seismicity.** The recorder
-   points at the cameras nearest the busiest seismic region, which is a proxy
-   and sometimes the wrong one — an official warning area or an aviation
-   colour code at orange says more about where to look than an earthquake
-   count does. Both are already fetched; combining them into the watch list is
-   a scoring question, and the scoring has to stay explainable.
-2. **Durable frames.** The store is per instance and capped at six hours, so
-   the reel a reader sees depends on which server answered. Object storage
-   behind the same interface would make "what did that camera see last night"
-   a question with one answer. It is the first thing here that would need
-   infrastructure rather than code.
-3. **Deposit against exposure.** A tephra run's ground-deposit layer is the
-   one with consequences for roads and airports, and it is currently just
-   another layer in the picker. Read at the point of each road-weather station
-   already on the map, it would say which routes a scenario puts under ash —
-   still a scenario, still IMO's numbers, but answering the question the
-   cameras and the road conditions are already about.
+1. **Ask IMO about the deposit units.** The per-location endpoint disagrees
+   with their own published scale by a factor of a thousand, which is almost
+   certainly grams labelled as kilograms. Until somebody there confirms it,
+   this product ranks by those figures and refuses to print them — and a
+   confirmation would turn a bar chart back into numbers. This is a question
+   for a person, not a commit.
+2. **Run the object store against a real bucket.** The backend is written and
+   its signing matches AWS's documented example, but "passes a local
+   signature-checking server" and "works against R2" are different claims and
+   only one of them has been earned.
+3. **Road segments, not road stations.** The exposure list uses road-weather
+   stations because they are points with names, but the thing a reader cares
+   about is a route. The road-condition geometry already on the map has the
+   line work; testing those lines against the footprint instead of a scatter
+   of stations would say "Grindavíkurvegur" rather than "a station on it".
 
 **Later**
 

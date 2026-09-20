@@ -11,7 +11,12 @@ import type { EarthquakeStats } from "@/analytics/stats";
 import type { Summary } from "@/analytics/summary";
 import type { OfficialAlert } from "./alert";
 import type { GnssStation, Interferogram } from "./deformation";
-import type { DispersionPointSeries, DispersionRun } from "./dispersion";
+import type {
+  DepositExposure,
+  DispersionLayer,
+  DispersionPointSeries,
+  DispersionRun,
+} from "./dispersion";
 import type { AirQualityStation } from "./air-quality";
 import type { RoadCondition, RoadWeatherStation } from "./roads";
 import type { WebcamSite } from "./webcam";
@@ -179,3 +184,22 @@ export type DispersionPointResponse = {
 };
 
 export type DispersionPointResult = DispersionPointResponse | ApiErrorResponse;
+
+/**
+ * The road-weather stations a run reaches.
+ *
+ * `checked` is the size of the network the footprint was tested against, so
+ * "three of 183" reads as a filter rather than as all we know about. Every
+ * figure is model output for a scenario.
+ */
+export type DispersionExposureResponse = {
+  ok: true;
+  generatedAt: string;
+  runId: string;
+  layer: DispersionLayer;
+  stations: DepositExposure[];
+  checked: number;
+  unavailable: boolean;
+};
+
+export type DispersionExposureResult = DispersionExposureResponse | ApiErrorResponse;

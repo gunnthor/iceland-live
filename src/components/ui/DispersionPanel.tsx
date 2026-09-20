@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import type { DepositExposure } from "@/domain/dispersion";
 import {
   describeLayer,
   frameTimes,
+  isQuotable,
   layerKey,
   legendFor,
   peakOf,
@@ -278,9 +280,19 @@ function StationProbe({
             <p className="tnum min-w-0 text-[10px] leading-tight text-[var(--color-ink-dim)]">
               {peak ? (
                 <>
-                  <span className="text-[var(--color-ink)]">
-                    {formatConcentration(peak.value)} {modelled.unit}
-                  </span>
+                  {/*
+                    The figure appears only for the layers whose units were
+                    checked against IMO's own scale and held. Deposit is a
+                    thousand times its own label, so it gets a time and a
+                    shape but never a number — see `isQuotable`.
+                  */}
+                  {isQuotable(layer) ? (
+                    <span className="text-[var(--color-ink)]">
+                      {formatConcentration(peak.value)} {modelled.unit}
+                    </span>
+                  ) : (
+                    <span className="text-[var(--color-ink-muted)]">heaviest</span>
+                  )}
                   <br />
                   at {formatDayClock(peak.at)}
                 </>
@@ -293,6 +305,14 @@ function StationProbe({
             Modelled {describeLayer(layer).toLowerCase()} for this scenario, over its{" "}
             {run.durationHours} forecast hours. The dashed line is now; everything
             right of it is model output for an eruption that is not occurring.
+            {!isQuotable(layer) && (
+              <>
+                {" "}
+                No figure is given for deposit: IMO&rsquo;s per-location values for it
+                come back about a thousand times their own label, so the shape is
+                shown and the number is not.
+              </>
+            )}
           </p>
         </div>
       )}
@@ -324,6 +344,119 @@ function StationProbe({
           </p>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * The roads a scenario reaches.
+ *
+ * ## Ordered, not quantified
+ *
+ * There is no figure beside these names, and that is deliberate rather than
+ * an omission: this list is built on the ground-deposit layer, which is the
+ * one whose per-location figures come back about a thousand times their own
+ * label. See `isQuotable` for the comparison that established it. The
+ * stations are ranked by the model's own values — a ratio, which survives a
+ * constant factor — and the values themselves never leave the server.
+ *
+ * ## Where the list comes from
+ *
+ * The footprint is the alpha channel of IMO's raster: one bit per pixel,
+ * meaning "the model puts something here". That is what makes this bounded —
+ * 200-odd road stations reduce to a handful before anything is asked of the
+ * per-location endpoint.
+ */
+function ExposureList({
+  stations,
+  checked,
+  layer,
+  loading,
+  unavailable,
+}: {
+  stations: readonly DepositExposure[];
+  checked: number;
+  layer: DispersionLayer | null;
+  loading: boolean;
+  unavailable: boolean;
+}) {
+  if (loading) {
+    return (
+      <div className="mt-3 border-t border-[var(--color-line)] pt-3">
+        <p className="label">Roads this scenario reaches</p>
+        <p className="mt-1 text-[10px] text-[var(--color-ink-dim)]">Reading the footprint&hellip;</p>
+      </div>
+    );
+  }
+
+  if (unavailable) {
+    return (
+      <div className="mt-3 border-t border-[var(--color-line)] pt-3">
+        <p className="label">Roads this scenario reaches</p>
+        <p className="mt-1 text-[10px] leading-relaxed text-[var(--color-ink-faint)]">
+          The modelled footprint could not be read, so we cannot say which road
+          stations this run covers.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-3 border-t border-[var(--color-line)] pt-3">
+      <div className="flex items-baseline justify-between gap-2">
+        <p className="label">Roads this scenario reaches</p>
+        <p className="tnum text-[10px] text-[var(--color-ink-faint)]">
+          {stations.length} of {checked} stations
+        </p>
+      </div>
+
+      {stations.length === 0 ? (
+        <p className="mt-1 text-[10px] leading-relaxed text-[var(--color-ink-faint)]">
+          The run&rsquo;s footprint covers no road-weather station in the network.
+        </p>
+      ) : (
+        <ul className="mt-1.5 space-y-1">
+          {stations.map((station) => (
+            <li key={station.stationId} className="flex items-center gap-2">
+              <span className="min-w-0 flex-1 truncate text-[11px] leading-tight text-[var(--color-ink)]">
+                {station.stationName}
+              </span>
+              <span className="tnum shrink-0 text-[10px] text-[var(--color-ink-faint)]">
+                {Math.round(station.distanceKm)} km
+              </span>
+              {/*
+                A bar, not a number. Its length is this station's share of the
+                largest in the list, which is the only thing about these
+                figures that can be published.
+              */}
+              <span
+                aria-hidden="true"
+                className="h-1 w-14 shrink-0 overflow-hidden rounded-full bg-white/[0.07]"
+              >
+                <span
+                  className="block h-full rounded-full bg-[#d09a6a]"
+                  style={{ width: `${Math.max((station.share ?? 0) * 100, station.share ? 3 : 0)}%` }}
+                />
+              </span>
+              <span className="tnum w-10 shrink-0 text-right text-[10px] text-[var(--color-ink-dim)]">
+                {station.peakAt ? formatClock(station.peakAt) : "\u2014"}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <p className="mt-2 text-[10px] leading-relaxed text-[var(--color-ink-faint)]">
+        {layer && <>Based on {describeLayer(layer).toLowerCase()}. </>}
+        Bars are each station&rsquo;s share of the heaviest in this list, and the time
+        is when the model peaks there. No quantity is given:{" "}
+        <strong className="font-medium text-[var(--color-ink-dim)]">
+          IMO&rsquo;s per-location deposit values come back about a thousand times
+          their own label
+        </strong>{" "}
+        &mdash; checked against their own published scale &mdash; so we rank by
+        them and do not quote them.
+      </p>
     </div>
   );
 }
@@ -377,6 +510,7 @@ function RunControls({
   onFrameChange,
   nowMs,
   probe,
+  exposure,
 }: {
   run: DispersionRun;
   layer: DispersionLayer;
@@ -385,6 +519,7 @@ function RunControls({
   onFrameChange: (index: number) => void;
   nowMs: number;
   probe: ProbeProps;
+  exposure: ExposureProps;
 }) {
   const frames = useMemo(() => frameTimes(run), [run]);
   const [playing, setPlaying] = useState(false);
@@ -544,6 +679,14 @@ function RunControls({
         </p>
       </div>
 
+      <ExposureList
+        stations={exposure.stations}
+        checked={exposure.checked}
+        layer={exposure.layer}
+        loading={exposure.loading}
+        unavailable={exposure.unavailable}
+      />
+
       <StationProbe
         run={run}
         layer={layer}
@@ -558,6 +701,15 @@ function RunControls({
     </div>
   );
 }
+
+/** Everything the road list needs. */
+export type ExposureProps = {
+  stations: readonly DepositExposure[];
+  layer: DispersionLayer | null;
+  checked: number;
+  loading: boolean;
+  unavailable: boolean;
+};
 
 /** Everything the station probe needs, grouped so the panel signature stays readable. */
 export type ProbeProps = {
@@ -582,6 +734,7 @@ export function DispersionPanel({
   loading,
   unavailable,
   probe,
+  exposure,
 }: {
   runs: readonly DispersionRun[];
   selectedId: string | null;
@@ -595,6 +748,7 @@ export function DispersionPanel({
   loading: boolean;
   unavailable: boolean;
   probe: ProbeProps;
+  exposure: ExposureProps;
 }) {
   const selected = runs.find((run) => run.id === selectedId) ?? null;
 
@@ -672,6 +826,7 @@ export function DispersionPanel({
           onFrameChange={onFrameChange}
           nowMs={nowMs}
           probe={probe}
+          exposure={exposure}
         />
       )}
 

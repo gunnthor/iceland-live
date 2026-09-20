@@ -46,6 +46,7 @@ import { useWebcams } from "@/hooks/useWebcams";
 import { useEnvironment } from "@/hooks/useEnvironment";
 import { useDispersion } from "@/hooks/useDispersion";
 import { useDispersionPoint } from "@/hooks/useDispersionPoint";
+import { useDispersionExposure } from "@/hooks/useDispersionExposure";
 import { lavaFlowsByRecency } from "@/domain/reykjanes";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { useNow } from "@/hooks/useNow";
@@ -216,6 +217,9 @@ export function AppShell({
     selectedRun && probeStation ? selectedRun.id : null,
     probeStation,
   );
+
+  /** Which road-weather stations the selected run's footprint covers. */
+  const exposure = useDispersionExposure(selectedRun?.id ?? null);
 
   /** The frame currently laid over the map. */
   const plumeOverlay = useMemo(() => {
@@ -613,6 +617,13 @@ export function AppShell({
             series: point.series,
             loading: point.loading,
             unavailable: point.unavailable,
+          }}
+          exposure={{
+            stations: exposure.stations,
+            layer: exposure.layer,
+            checked: exposure.checked,
+            loading: exposure.loading,
+            unavailable: exposure.unavailable,
           }}
         />
       )}

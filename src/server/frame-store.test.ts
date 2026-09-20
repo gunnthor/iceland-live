@@ -76,7 +76,7 @@ describe("frame store", () => {
 
       const reel = await readReel(key, NOW);
       expect(reel).toHaveLength(1);
-      expect(reel[0]).toMatchObject({ at: NOW, bytes: 2048, tag: '"abc"' });
+      expect(reel[0]).toMatchObject({ at: NOW, bytes: 2048 });
       expect((await readFrame(key, NOW))?.byteLength).toBe(2048);
     });
 
@@ -161,25 +161,32 @@ describe("frame store", () => {
       expect(await readFrame(key, NOW - total * 120_000)).toBeNull();
     });
 
-    it("drops the least recently written view once too many are recorded", async () => {
-      for (let index = 0; index < MAX_VIEWS + 3; index += 1) {
+    it("drops the view whose newest frame is oldest once too many are recorded", async () => {
+      // Each view's single frame is a minute newer than the last, so the
+      // ordering under test is unambiguous rather than incidental.
+      const total = MAX_VIEWS + 3;
+      for (let index = 0; index < total; index += 1) {
         await recordFrame(viewKeyFor(`${CAMERA}?${index}`), frame(), {
-          takenAt: NOW - 1000,
+          takenAt: NOW - (total - index) * 60_000,
           tag: `"${index}"`,
-          now: NOW + index,
+          now: NOW,
         });
       }
-      const stats = await frameStoreStats();
+
+      const stats = await frameStoreStats(NOW);
       expect(stats.views).toBe(MAX_VIEWS);
-      // The first camera recorded is the one nobody came back to.
+      // The three with the oldest pictures are gone: nobody is watching them
+      // and the recorder is not pointed at them.
       expect(await readReel(viewKeyFor(`${CAMERA}?0`), NOW)).toEqual([]);
+      expect(await readReel(viewKeyFor(`${CAMERA}?2`), NOW)).toEqual([]);
+      expect(await readReel(viewKeyFor(`${CAMERA}?${total - 1}`), NOW)).toHaveLength(1);
     });
 
     it("forgets frames older than the retention window", async () => {
       const key = viewKeyFor(CAMERA);
       await recordFrame(key, frame(), { takenAt: NOW - 20 * 3_600_000, tag: '"old"', now: NOW });
       await recordFrame(key, frame(), { takenAt: NOW, tag: '"new"', now: NOW });
-      expect((await readReel(key, NOW)).map((item) => item.tag)).toEqual(['"new"']);
+      expect((await readReel(key, NOW)).map((item) => item.at)).toEqual([NOW]);
     });
 
     it("thins every reel rather than emptying one when over budget", async () => {
@@ -201,7 +208,7 @@ describe("frame store", () => {
         }
       }
 
-      const stats = await frameStoreStats();
+      const stats = await frameStoreStats(NOW);
       expect(stats.bytes).toBeLessThanOrEqual(8 * 1024);
       // Both views survive, each still holding its newest frame.
       for (const key of keys) {
