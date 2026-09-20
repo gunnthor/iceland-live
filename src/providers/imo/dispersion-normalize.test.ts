@@ -12,8 +12,10 @@ import {
 } from "./dispersion-normalize";
 import {
   defaultLayer,
+  depthEquivalent,
   frameTimes,
   groundLayer,
+  hasDepthEquivalent,
   legendFor,
   scaleFor,
   parseSeriesLayer,
@@ -580,5 +582,50 @@ describe("groundLayer", () => {
 
   it("returns null for a run with no layers at all", () => {
     expect(groundLayer({ ...run, layers: [] })).toBeNull();
+  });
+});
+
+describe("depthEquivalent", () => {
+  /*
+   * IMO's own legend pairs each band with a depth: 1000 kg/m² with ~1 m,
+   * 100 with ~10 cm, 1 with ~1 mm. The equivalence is theirs; this only
+   * reproduces it.
+   */
+  it("matches the pairings on IMO's published legend", () => {
+    expect(depthEquivalent(1000)).toBe("~1 m");
+    expect(depthEquivalent(100)).toBe("~10 cm");
+    expect(depthEquivalent(10)).toBe("~1 cm");
+    expect(depthEquivalent(1)).toBe("~1 mm");
+  });
+
+  it("gives a real figure the unit a reader can picture", () => {
+    expect(depthEquivalent(43.2)).toBe("~4 cm");
+    expect(depthEquivalent(2742)).toBe("~2.7 m");
+  });
+
+  it("does not round a fraction of a millimetre down to nothing", () => {
+    expect(depthEquivalent(0.4)).toBe("under 1 mm");
+    expect(depthEquivalent(0.01)).toBe("a trace");
+  });
+
+  it("has nothing to say about zero or nonsense", () => {
+    expect(depthEquivalent(0)).toBeNull();
+    expect(depthEquivalent(-1)).toBeNull();
+    expect(depthEquivalent(Number.NaN)).toBeNull();
+  });
+});
+
+describe("hasDepthEquivalent", () => {
+  it("applies to deposit and not to a concentration", () => {
+    // Ash suspended in air has no depth.
+    expect(
+      hasDepthEquivalent({ dispersionType: "Ash kg/m2", altitude: 0, altitudeUnit: "m" }),
+    ).toBe(true);
+    expect(
+      hasDepthEquivalent({ dispersionType: "Ash g/m3", altitude: 5, altitudeUnit: "m" }),
+    ).toBe(false);
+    expect(hasDepthEquivalent({ dispersionType: "SO2", altitude: 0, altitudeUnit: "m" })).toBe(
+      false,
+    );
   });
 });

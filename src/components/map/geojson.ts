@@ -258,3 +258,26 @@ export function toPlumeOriginGeoJson(
     ],
   };
 }
+
+/**
+ * A single coordinate as a one-point layer, or nothing.
+ *
+ * Used for the place the dispersal panel is asking about. Carries no
+ * properties: it is a position, and anything else written beside it would be
+ * a label on a spot the reader chose rather than on a thing that exists.
+ */
+export function toPointGeoJson(
+  point: { latitude: number; longitude: number } | null,
+): GeoJSON.FeatureCollection {
+  if (!point) return { type: "FeatureCollection", features: [] };
+  return {
+    type: "FeatureCollection",
+    features: [
+      {
+        type: "Feature",
+        geometry: { type: "Point", coordinates: [point.longitude, point.latitude] },
+        properties: {},
+      },
+    ],
+  };
+}

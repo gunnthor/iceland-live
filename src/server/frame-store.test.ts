@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -249,5 +250,96 @@ describe("frame store", () => {
       );
       expect(await readReel(key, NOW)).toEqual([]);
     });
+  });
+});
+
+describe("a new file that is not a new picture", () => {
+  /*
+   * Two consecutive real frames from a live camera, sixty seconds apart, with
+   * a vehicle moving between them. A JPEG cannot be written here without an
+   * encoder, and a synthetic one would not exercise the Huffman path these
+   * cameras actually produce — so the fixtures are genuine pictures. See
+   * `__fixtures__/README.md`.
+   */
+  const frameA = new Uint8Array(readFileSync(join(__dirname, "__fixtures__/camera-frame-a.jpg")));
+  const frameB = new Uint8Array(readFileSync(join(__dirname, "__fixtures__/camera-frame-b.jpg")));
+
+  let directory: string;
+  const saved: Record<string, string | undefined> = {};
+  const keys = [
+    "ICELAND_LIVE_CACHE_DIR",
+    "ICELAND_LIVE_FRAME_BUDGET_MB",
+    "ICELAND_LIVE_FRAME_CHANGE_THRESHOLD",
+  ];
+
+  beforeEach(async () => {
+    for (const key of keys) {
+      saved[key] = process.env[key];
+      delete process.env[key];
+    }
+    directory = await mkdtemp(join(tmpdir(), "iceland-live-change-"));
+    process.env.ICELAND_LIVE_CACHE_DIR = directory;
+    resetFrameStoreForTests();
+  });
+
+  afterEach(async () => {
+    await rm(directory, { recursive: true, force: true });
+    for (const key of keys) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+  });
+
+  it("keeps a frame where something moved", async () => {
+    const key = viewKeyFor(CAMERA);
+    expect(await recordFrame(key, frameA, { takenAt: NOW - 60_000, tag: '"a"', now: NOW })).toBe(
+      "stored",
+    );
+    expect(await recordFrame(key, frameB, { takenAt: NOW, tag: '"b"', now: NOW })).toBe("stored");
+    expect(await readReel(key, NOW)).toHaveLength(2);
+  });
+
+  it("skips a republication of the same picture", async () => {
+    // A new file and a new validator, so neither of the cheaper checks catches
+    // it; only the comparison does.
+    const key = viewKeyFor(CAMERA);
+    await recordFrame(key, frameA, { takenAt: NOW - 60_000, tag: '"a"', now: NOW });
+    expect(await recordFrame(key, frameA, { takenAt: NOW, tag: '"different"', now: NOW })).toBe(
+      "unchanged",
+    );
+    expect(await readReel(key, NOW)).toHaveLength(1);
+  });
+
+  it("keeps the first frame of a view whatever it looks like", async () => {
+    // There is nothing to compare it against, and one picture is the whole
+    // difference between a camera that works and one that does not.
+    expect(
+      await recordFrame(viewKeyFor(OTHER), frameA, { takenAt: NOW, tag: '"a"', now: NOW }),
+    ).toBe("stored");
+  });
+
+  it("honours a raised threshold", async () => {
+    // The same pair, which differs by about 1.75% of blocks: kept at the
+    // default of 0.25% and skipped once the bar is above it.
+    process.env.ICELAND_LIVE_FRAME_CHANGE_THRESHOLD = "0.05";
+    const key = viewKeyFor(CAMERA);
+    await recordFrame(key, frameA, { takenAt: NOW - 60_000, tag: '"a"', now: NOW });
+    expect(await recordFrame(key, frameB, { takenAt: NOW, tag: '"b"', now: NOW })).toBe(
+      "unchanged",
+    );
+  });
+
+  it("keeps a frame it cannot decode rather than assuming nothing changed", async () => {
+    // "We do not know whether anything changed" and "nothing changed" lead to
+    // opposite decisions, and only one of them loses a picture.
+    const key = viewKeyFor(CAMERA);
+    await recordFrame(key, frameA, { takenAt: NOW - 60_000, tag: '"a"', now: NOW });
+    expect(
+      await recordFrame(key, new Uint8Array(2048).fill(0x41), {
+        takenAt: NOW,
+        tag: '"not a jpeg"',
+        now: NOW,
+      }),
+    ).toBe("stored");
   });
 });

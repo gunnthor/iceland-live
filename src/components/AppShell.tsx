@@ -47,6 +47,11 @@ import { useEnvironment } from "@/hooks/useEnvironment";
 import { useDispersion } from "@/hooks/useDispersion";
 import { useDispersionPoint } from "@/hooks/useDispersionPoint";
 import { useDispersionExposure } from "@/hooks/useDispersionExposure";
+
+/** Where the dispersal panel evaluates the selected run. */
+type ProbeTarget =
+  | { kind: "station"; id: string }
+  | { kind: "point"; latitude: number; longitude: number };
 import { lavaFlowsByRecency } from "@/domain/reykjanes";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { useNow } from "@/hooks/useNow";
@@ -187,13 +192,17 @@ export function AppShell({
   }, [selectedRun, plumeView, nowHour]);
 
   /*
-   * The station the selected run is evaluated at.
+   * Where the selected run is evaluated.
    *
-   * Component state rather than URL: it is a question asked about the run on
-   * screen, not part of what the link is showing. Unset falls back to the
-   * first station, which the panel resolves.
+   * Either a monitoring station, which can also answer what it is measuring
+   * now, or a coordinate the reader picked off the map — a farm, a campsite,
+   * a junction that is on no list. Component state rather than URL: it is a
+   * question asked about the run on screen, not part of what the link shows.
+   * Unset falls back to the nearest station.
    */
-  const [probeStationId, setProbeStationId] = useState<string | null>(null);
+  const [probeTarget, setProbeTarget] = useState<ProbeTarget | null>(null);
+  /** True while the next map click means "ask about here". */
+  const [picking, setPicking] = useState(false);
 
   /*
    * Ordered from the modelled source outwards, so the default is the place
@@ -205,17 +214,37 @@ export function AppShell({
     return stationsNearest(environment.air, selectedRun);
   }, [environment.air, selectedRun]);
 
-  const probeStation = useMemo(
-    () =>
-      probeStations.find((station) => station.id === probeStationId) ??
+  /** The station a station-target names, or the default when none is set. */
+  const probeStation = useMemo(() => {
+    if (probeTarget?.kind === "point") return null;
+    return (
+      probeStations.find((station) => station.id === probeTarget?.id) ??
       probeStations[0] ??
-      null,
-    [probeStations, probeStationId],
-  );
+      null
+    );
+  }, [probeStations, probeTarget]);
+
+  /** The coordinate being asked about, whichever kind of target chose it. */
+  const probePlace = useMemo(() => {
+    if (probeTarget?.kind === "point") {
+      return { latitude: probeTarget.latitude, longitude: probeTarget.longitude };
+    }
+    if (!probeStation) return null;
+    return { latitude: probeStation.latitude, longitude: probeStation.longitude };
+  }, [probeTarget, probeStation]);
 
   const point = useDispersionPoint(
-    selectedRun && probeStation ? selectedRun.id : null,
-    probeStation,
+    selectedRun && probePlace ? selectedRun.id : null,
+    probePlace,
+  );
+
+  const pickPlace = useCallback(
+    (place: { latitude: number; longitude: number }) => {
+      setProbeTarget({ kind: "point", ...place });
+      setPicking(false);
+      if (!isDesktop) setSheetSnap("half");
+    },
+    [isDesktop],
   );
 
   /** Which road-weather stations the selected run's footprint covers. */
@@ -508,11 +537,17 @@ export function AppShell({
   // Escape clears the selection, wherever focus happens to be.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && eventId) setEventId(null);
+      if (event.key !== "Escape") return;
+      // An armed mode is the thing Escape should undo first.
+      if (picking) {
+        setPicking(false);
+        return;
+      }
+      if (eventId) setEventId(null);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [eventId, setEventId]);
+  }, [eventId, setEventId, picking]);
 
   // A deep link to an event should arrive with the map already on it.
   const deepLinkHandled = useRef(false);
@@ -612,8 +647,16 @@ export function AppShell({
           unavailable={dispersion.unavailable}
           probe={{
             stations: probeStations,
-            stationId: probeStation?.id ?? null,
-            onStationChange: setProbeStationId,
+            onStationChange: (id) => setProbeTarget({ kind: "station", id }),
+            place: probePlace,
+            /* A coordinate has no instrument standing on it. */
+            station: probeStation,
+            picking,
+            onStartPicking: () => {
+              setPicking(true);
+              if (!isDesktop) setSheetSnap("peek");
+            },
+            onCancelPicking: () => setPicking(false),
             series: point.series,
             loading: point.loading,
             unavailable: point.unavailable,
@@ -710,6 +753,9 @@ export function AppShell({
             : null
         }
         plume={plumeOverlay}
+        probePoint={selectedRun ? probePlace : null}
+        picking={picking}
+        onPickPoint={pickPlace}
         plumeSource={
           selectedRun && hasKnownSource(selectedRun)
             ? {

@@ -463,6 +463,11 @@ result.
 - **Opt-in, not automatic.** The same proxy serves the thumbnails in the camera
   list; recording those would spread a fixed budget across every camera on the
   page instead of concentrating it on the one being watched.
+- **A new file is not always a new picture.** A camera watching an empty road
+  publishes every minute or so whether or not anything happened. Each frame is
+  compared against the last one kept and skipped when nothing moved, which is
+  reported as `unchanged` — a different answer from `duplicate`, which means
+  the camera republished nothing at all.
 - **Timed by the camera's clock**, from `Last-Modified`, not ours. Two viewers
   polling on different schedules would otherwise store the same picture twice
   under different times, and the reel would claim a frame rate the camera does
@@ -500,6 +505,41 @@ server that recomputes and verifies every signature. **It has not been run
 against a real bucket.** The failure it is most designed to catch, a request
 signed in one form and sent in another, is exactly what that local server
 rejects.
+
+**Telling a new picture from a new file** (`src/server/jpeg-dc.ts`). The
+question is only "did anything change", and that does not need pixels. Every
+8×8 block of a JPEG carries a DC coefficient which *is* that block's mean
+brightness, so Huffman-decoding the scan and keeping only those gives a
+1/8-scale greyscale thumbnail — 640×480 becomes 80×60 — with no inverse DCT,
+no chroma upsampling and no colour conversion. That is a page of code rather
+than a dependency, and it only accepts what these cameras publish (baseline
+sequential, 8-bit); a progressive file is refused rather than half-read,
+because a wrong brightness map decides frames are unchanged when they are not.
+
+Verified against Chromium's own JPEG decoder: the same camera frame drawn to a
+canvas and averaged over each 8×8 block agreed with this to a mean of **0.172
+out of 255** across 4,524 interior blocks, worst block 3.8. That residual is
+the quantisation error the DC coefficient carries by definition.
+
+**The comparison counts blocks rather than averaging them.** A mean over the
+whole frame confuses two different things: one car crossing a road camera
+covers perhaps twenty of 4,800 blocks, so even if those change completely the
+mean moves about 0.4 — indistinguishable from noise spread thinly over
+everything. Counting blocks that moved past a per-block floor separates them.
+
+The threshold was measured on live cameras rather than chosen:
+
+| scene | blocks changed |
+| --- | --- |
+| rural road, nothing moving, 6 minutes apart | 0.02% |
+| one vehicle crossing the view | 1.75% – 2.60% |
+| busy urban traffic | 24% – 36% |
+| an entirely different camera | 77% |
+
+A quarter of one percent sits an order of magnitude above the still scene and
+an order of magnitude below the smallest real change.
+`threshold-probe.integration.ts` reproduces the table from whatever the
+cameras are doing now.
 
 Keys are a SHA-256 prefix of the source URL, so nothing a caller sends names a
 path; `/api/webcams/frame` additionally checks a frame is indexed before
@@ -847,6 +887,7 @@ src/
 │   ├── frame-backend.ts    the backend seam (+ -local, -s3)
 │   ├── aws-sigv4.ts     request signing for S3-compatible stores
 │   ├── png-alpha.ts     alpha channel only: "is anything here"
+│   ├── jpeg-dc.ts       block brightness only: "did anything change"
 │   ├── camera-recorder.ts  polls a derived watch list on a schedule
 │   ├── watch-focus.ts   the ladder deciding where to point it
 │   ├── road-network.ts  the line work, cached for a day
@@ -1145,6 +1186,10 @@ the code is written to make that hard to forget.
   invented. The factors now applied are IMO's own, lifted from their viewer's
   source, and corroborated independently against their published colour scale.
   `scaleFor` is the one place that holds them.
+- **A depth equivalent is IMO's, not a conversion of ours.** Their legend
+  labels each deposit band twice — "1000 kg/m2 [~ 1 m]", "1 kg/m2 [~ 1mm]" —
+  so showing "about 4 cm" beside 43 kg/m² reproduces their stated equivalence
+  rather than assuming a density. The "~" is theirs too, and is kept.
 - **A band marks a period, not a claim about it.** The shaded stretches under
   the charts are the periods the observations' own sentences describe, clipped
   to what is on screen. Two things overlapping in time is not evidence that one
@@ -1272,6 +1317,12 @@ that is where upstream reality meets our assumptions.
   scenario's modelled deposit reaches and ranks them; it says nothing about
   whether a road would be passable, and the eruption behind it is not
   happening.
+- **Depths are order-of-magnitude.** Real tephra varies with grain size and
+  compaction, which is why IMO writes theirs with a tilde and so does this.
+- **A picked place has no instrument on it.** Clicking the map answers what
+  the model puts there and nothing about what is actually in the air, because
+  nothing is measuring it. The panel says so and offers the stations, which
+  can answer both.
 - **Each road figure is one point on a route.** The covered point nearest the
   source, whose distance is shown. Asking at every vertex of every route would
   be thousands of requests, so a long route may be heavier somewhere else
@@ -1333,22 +1384,19 @@ that is where upstream reality meets our assumptions.
 
 **Next up**
 
-1. **Let the reader ask about a place.** The dispersal panel evaluates a run
-   at monitoring stations and at road routes, both chosen for them. Clicking
-   the map would answer "what does this scenario put *here*" for a farm, a
-   campsite or a road junction that is on no list. The endpoint already takes
-   a coordinate; what it needs is a click target that does not fight with
-   selecting an earthquake.
-2. **A frame that is worth keeping.** The reel stores every fetch, which
-   during a still night is thirty near-identical pictures of a dark road. A
-   cheap difference between consecutive frames would let the store keep the
-   ones where something changed and spend its budget on cameras that are
-   showing something.
-3. **Say what the deposit means in depth.** IMO's own legend gives the
-   equivalence — 1 kg/m² is about a millimetre — so "43 kg/m²" could read as
-   "about 4 cm" without anything being invented. It is their conversion, not
-   ours, and it is the difference between a number and a picture for most
-   readers.
+1. **Spend the frame budget where something is happening.** The store now
+   knows how much each camera is changing, and still gives all of them the
+   same thirty slots. A camera showing traffic could earn more of the budget
+   than one showing an empty road, which is the difference between a reel and
+   a record.
+2. **Share a place, not just a run.** The picked coordinate lives in component
+   state, so "look at what this scenario puts over my farm" is not a link. It
+   belongs in the URL beside the run, with the same validation the API already
+   applies.
+3. **A written brief.** Everything here is a panel to be read on screen. The
+   deterministic summary, the observations, the current warnings and the
+   dispersal scenarios could compose into a page someone could send — which is
+   what people actually do with this kind of information.
 
 **Later**
 

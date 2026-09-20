@@ -39,6 +39,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { changedFraction, decodeLuma, type Luma } from "./jpeg-dc";
 import { localFrameBackend } from "./frame-backend-local";
 import { createS3FrameBackend, s3ConfigFromEnv } from "./frame-backend-s3";
 import {
@@ -59,6 +60,35 @@ const MAX_FRAME_BYTES = 2 * 1024 * 1024;
 
 /** How long a listing is trusted before it is fetched again. */
 const LISTING_TTL_MS = 20_000;
+
+/**
+ * How much of a frame must differ from the last one kept, as a fraction of
+ * its 8×8 blocks, for the new one to be worth a slot.
+ *
+ * A camera watching an empty road publishes a new file every minute or so
+ * whether or not anything happened. Storing thirty of those spends a reel on
+ * nothing and leaves less budget for cameras that are showing something.
+ *
+ * Measured on live cameras rather than guessed:
+ *
+ * | scene                                   | blocks changed |
+ * |-----------------------------------------|----------------|
+ * | rural road, nothing moving, 6 min apart | 0.02%          |
+ * | one vehicle crossing the view           | 1.75% – 2.60%  |
+ * | busy urban traffic                      | 24% – 36%      |
+ * | an entirely different camera            | 77%            |
+ *
+ * A quarter of one percent sits an order of magnitude above the still scene
+ * and an order of magnitude below the smallest real change, which is about as
+ * much daylight as a threshold gets.
+ *
+ * A frame that cannot be compared is always kept: "we do not know whether
+ * anything changed" must never be read as "nothing changed".
+ */
+function changeThreshold(): number {
+  const configured = Number(process.env.ICELAND_LIVE_FRAME_CHANGE_THRESHOLD);
+  return Number.isFinite(configured) && configured >= 0 ? configured : 0.0025;
+}
 
 /**
  * How long frames are kept.
@@ -121,6 +151,14 @@ const seen = new Map<string, Set<number>>();
  * store one extra frame before the times start matching again.
  */
 const tags = new Map<string, Map<string, number>>();
+
+/**
+ * The brightness map of the last frame stored for each view.
+ *
+ * Per instance and not persisted: a restarted process simply keeps the first
+ * frame it sees, which is the right outcome anyway.
+ */
+const lastLuma = new Map<string, Luma>();
 
 /**
  * A stable, filesystem- and key-safe name for a camera view.
@@ -291,7 +329,7 @@ async function enforceBounds(now: number): Promise<void> {
   }
 }
 
-export type RecordResult = "stored" | "duplicate" | "skipped";
+export type RecordResult = "stored" | "duplicate" | "unchanged" | "skipped";
 
 /**
  * Files a frame away, if it is one we do not already hold.
@@ -304,6 +342,10 @@ export type RecordResult = "stored" | "duplicate" | "skipped";
  *
  * `tag` is the upstream `ETag`, used only to recognise a repeat from a camera
  * that publishes no `Last-Modified`.
+ *
+ * A frame that is a genuinely new publication but looks the same as the last
+ * one stored is reported as `unchanged` and not kept. That is a different
+ * answer from `duplicate`, which means the camera republished nothing at all.
  */
 export async function recordFrame(
   view: string,
@@ -328,6 +370,25 @@ export async function recordFrame(
   const frames = await listView(view, now);
   if (frames.some((frame) => frame.at === takenAt)) return "duplicate";
 
+  /*
+   * A new file, but is it a new picture? Compared before writing, so an
+   * unchanged frame costs a decode rather than a write and a slot.
+   *
+   * Only when we already hold something: the first frame of a view is always
+   * worth keeping, and so is one we cannot decode.
+   */
+  const luma = decodeLuma(body);
+  const previous = lastLuma.get(view);
+  if (luma && previous && frames.length > 0) {
+    const difference = changedFraction(previous, luma);
+    if (difference !== null && difference < changeThreshold()) {
+      // Remembered as the new baseline even though it was not kept, so a
+      // scene that drifts slowly is not held against a frame from an hour ago.
+      lastLuma.set(view, luma);
+      return "unchanged";
+    }
+  }
+
   try {
     await frameBackend().put(view, takenAt, body);
   } catch (error) {
@@ -340,6 +401,8 @@ export async function recordFrame(
   const updated = sortFrames([...frames, { at: takenAt, bytes: body.byteLength }]);
   listings.set(view, { frames: updated, fetchedAt: now });
   if (allListing) allListing.views.set(view, updated);
+
+  if (luma) lastLuma.set(view, luma);
 
   let times = seen.get(view);
   if (!times) seen.set(view, (times = new Set()));
@@ -374,6 +437,7 @@ export function resetFrameStoreForTests(): void {
   allListing = null;
   seen.clear();
   tags.clear();
+  lastLuma.clear();
   backend = null;
   // Warnings are logged once per scope for the life of the process; a test
   // asserting degraded behaviour should not be silenced by an earlier one.

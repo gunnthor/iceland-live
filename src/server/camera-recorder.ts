@@ -64,7 +64,10 @@ export type RecorderReport = {
   /** Camera views polled. */
   views: number;
   stored: number;
+  /** The camera had not republished since we last asked. */
   duplicate: number;
+  /** A new file, but the same picture — see the frame store's threshold. */
+  unchanged: number;
   skipped: number;
   /** Views whose image could not be fetched at all. */
   failed: number;
@@ -169,6 +172,7 @@ export async function recordWatchList(): Promise<RecorderReport> {
     views: 0,
     stored: 0,
     duplicate: 0,
+    unchanged: 0,
     skipped: 0,
     failed: 0,
     durationMs: 0,

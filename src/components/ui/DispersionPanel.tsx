@@ -4,7 +4,9 @@ import { useEffect, useMemo, useState } from "react";
 import type { RoadExposure } from "@/domain/roads";
 import {
   unitFor,
+  depthEquivalent,
   describeLayer,
+  hasDepthEquivalent,
   frameTimes,
   layerKey,
   legendFor,
@@ -17,7 +19,7 @@ import {
 import { HEADLINE_POLLUTANTS, type AirQualityStation } from "@/domain/air-quality";
 import { distanceKm } from "@/lib/geo";
 import { Sparkline } from "@/components/charts/Sparkline";
-import { cn } from "@/lib/format";
+import { cn, formatCoordinates } from "@/lib/format";
 import { formatClock, formatDayClock, formatRelative } from "@/lib/time";
 
 /**
@@ -174,8 +176,12 @@ function StationProbe({
   run,
   layer,
   stations,
-  stationId,
   onStationChange,
+  place,
+  station,
+  picking,
+  onStartPicking,
+  onCancelPicking,
   series,
   loading,
   unavailable,
@@ -184,16 +190,17 @@ function StationProbe({
   run: DispersionRun;
   layer: DispersionLayer;
   stations: readonly AirQualityStation[];
-  stationId: string | null;
   onStationChange: (id: string) => void;
+  place: { latitude: number; longitude: number } | null;
+  station: AirQualityStation | null;
+  picking: boolean;
+  onStartPicking: () => void;
+  onCancelPicking: () => void;
   series: readonly DispersionPointSeries[];
   loading: boolean;
   unavailable: string | null;
   nowMs: number;
 }) {
-  const station =
-    stations.find((item) => item.id === stationId) ?? stations[0] ?? null;
-
   const modelled = useMemo(
     () =>
       series.find(
@@ -207,7 +214,7 @@ function StationProbe({
 
   const peak = modelled ? peakOf(modelled) : null;
 
-  /* The station's own current readings, for the pollutants we lead with. */
+  /* A station's own current readings, for the pollutants we lead with. */
   const measured = useMemo(() => {
     if (!station) return [];
     return station.latest.filter((reading) =>
@@ -215,46 +222,92 @@ function StationProbe({
     );
   }, [station]);
 
-  if (stations.length === 0) {
-    return (
-      <div className="mt-3 border-t border-[var(--color-line)] pt-3">
-        <p className="label">At a monitoring station</p>
-        <p className="mt-1 text-[10px] leading-relaxed text-[var(--color-ink-faint)]">
-          Switch on the Air &amp; roads layer to ask what this scenario puts over a
-          named place, and to see what that place is measuring now.
-        </p>
-      </div>
-    );
-  }
-
   return (
     <div className="mt-3 border-t border-[var(--color-line)] pt-3">
       <div className="flex items-baseline justify-between gap-2">
-        <label className="flex min-w-0 flex-1 items-baseline gap-1.5">
-        <span className="label shrink-0">At</span>
-        <select
-          value={station?.id ?? ""}
-          onChange={(event) => onStationChange(event.currentTarget.value)}
-          aria-label="Monitoring station to evaluate the simulation at"
-          className="min-w-0 flex-1 truncate rounded border-0 bg-transparent py-0 text-[11px] text-[var(--color-ink-muted)] outline-none transition-colors hover:text-[var(--color-ink)] focus-visible:ring-1 focus-visible:ring-[var(--color-line-strong)]"
-        >
-          {stations.map((item) => (
-            <option
-              key={item.id}
-              value={item.id}
-              className="bg-[var(--color-surface-raised)] text-[var(--color-ink)]"
+        {station ? (
+          <label className="flex min-w-0 flex-1 items-baseline gap-1.5">
+            <span className="label shrink-0">At</span>
+            <select
+              value={station.id}
+              onChange={(event) => onStationChange(event.currentTarget.value)}
+              aria-label="Monitoring station to evaluate the simulation at"
+              className="min-w-0 flex-1 truncate rounded border-0 bg-transparent py-0 text-[11px] text-[var(--color-ink-muted)] outline-none transition-colors hover:text-[var(--color-ink)] focus-visible:ring-1 focus-visible:ring-[var(--color-line-strong)]"
             >
-              {item.name}
-            </option>
-          ))}
-        </select>
-        </label>
-        {station && (
+              {stations.map((item) => (
+                <option
+                  key={item.id}
+                  value={item.id}
+                  className="bg-[var(--color-surface-raised)] text-[var(--color-ink)]"
+                >
+                  {item.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : (
+          <p className="tnum min-w-0 flex-1 truncate text-[11px] text-[var(--color-ink)]">
+            <span className="label pr-1.5">At</span>
+            {place ? formatCoordinates(place.latitude, place.longitude) : "\u2014"}
+          </p>
+        )}
+        {place && (
           <span className="tnum shrink-0 text-[10px] text-[var(--color-ink-faint)]">
-            {Math.round(distanceKm(run, station))} km from source
+            {Math.round(distanceKm(run, place))} km from source
           </span>
         )}
       </div>
+
+      {/*
+        The stations answer "and what is actually in the air there", which no
+        arbitrary coordinate can. But the places worth asking about are not all
+        on that list — a farm, a campsite, a junction — so both are offered.
+      */}
+      <div className="mt-1 flex items-center gap-2">
+        {picking ? (
+          <>
+            <span className="text-[10px] text-[var(--color-ink-muted)]">
+              Click the map to choose a place&hellip;
+            </span>
+            <button
+              type="button"
+              onClick={onCancelPicking}
+              className="rounded px-1.5 py-0.5 text-[10px] text-[var(--color-ink-dim)] underline-offset-2 transition-colors hover:text-[var(--color-ink)] hover:underline"
+            >
+              Cancel
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={onStartPicking}
+              className="rounded px-1.5 py-0.5 text-[10px] text-[var(--color-ink-dim)] underline-offset-2 transition-colors hover:text-[var(--color-ink)] hover:underline"
+            >
+              Pick a place on the map
+            </button>
+            {!station && stations.length > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  const first = stations[0];
+                  if (first) onStationChange(first.id);
+                }}
+                className="rounded px-1.5 py-0.5 text-[10px] text-[var(--color-ink-dim)] underline-offset-2 transition-colors hover:text-[var(--color-ink)] hover:underline"
+              >
+                Back to a station
+              </button>
+            )}
+          </>
+        )}
+      </div>
+
+      {stations.length === 0 && !place && (
+        <p className="mt-1 text-[10px] leading-relaxed text-[var(--color-ink-faint)]">
+          Switch on the Air &amp; roads layer for the monitoring stations, or pick a
+          place on the map.
+        </p>
+      )}
 
       {loading && (
         <p className="mt-1.5 text-[10px] text-[var(--color-ink-dim)]">Evaluating&hellip;</p>
@@ -283,6 +336,14 @@ function StationProbe({
                   <span className="text-[var(--color-ink)]">
                     {formatConcentration(peak.value)} {modelled.unit}
                   </span>
+                  {hasDepthEquivalent(layer) && depthEquivalent(peak.value) && (
+                    <>
+                      {" "}
+                      <span className="text-[var(--color-ink-dim)]">
+                        ({depthEquivalent(peak.value)})
+                      </span>
+                    </>
+                  )}
                   <br />
                   at {formatDayClock(peak.at)}
                 </>
@@ -299,20 +360,13 @@ function StationProbe({
         </div>
       )}
 
-      {measured.length > 0 && (
+      {measured.length > 0 ? (
         <div className="mt-2 rounded border border-[var(--color-line)] bg-white/[0.02] px-2 py-1.5">
           <p className="label">Measured there now</p>
           <p className="tnum mt-1 text-[11px] leading-tight text-[var(--color-ink)]">
             {measured.map((reading, index) => (
               <span key={reading.pollutant}>
                 {index > 0 && <span className="px-1.5 text-[var(--color-ink-faint)]">&middot;</span>}
-                {/*
-                  A measurement, formatted the way every other reading in the
-                  interface is. The modelled figures above need more decimals
-                  because they range over orders of magnitude; an instrument
-                  reported to four decimal places is claiming a precision the
-                  agency does not.
-                */}
                 {reading.pollutant}{" "}
                 {reading.value.toLocaleString("en-GB", { maximumFractionDigits: 1 })}{" "}
                 <span className="text-[var(--color-ink-dim)]">{reading.unit}</span>
@@ -325,6 +379,15 @@ function StationProbe({
             the air as it is, and have nothing to do with the scenario above.
           </p>
         </div>
+      ) : (
+        place &&
+        !station && (
+          <p className="mt-2 text-[10px] leading-relaxed text-[var(--color-ink-faint)]">
+            Nothing is measured at this spot &mdash; it is a coordinate, not an
+            instrument. Pick a monitoring station to see what is actually in the
+            air somewhere.
+          </p>
+        )
       )}
     </div>
   );
@@ -385,6 +448,8 @@ function ExposureList({
     );
   }
 
+  const depth = layer !== null && hasDepthEquivalent(layer);
+
   return (
     <div className="mt-3 border-t border-[var(--color-line)] pt-3">
       <div className="flex items-baseline justify-between gap-2">
@@ -408,7 +473,11 @@ function ExposureList({
         <ul className="mt-1.5 space-y-1">
           {routes.map((route) => (
             <li key={route.route} className="flex items-center gap-2">
-              <span className="min-w-0 flex-1 truncate text-[11px] leading-tight text-[var(--color-ink)]">
+              <span
+                className="min-w-0 flex-1 truncate text-[11px] leading-tight text-[var(--color-ink)]"
+                // Five columns leave little room, and these names are long.
+                title={route.roadNumber ? `${route.route} (road ${route.roadNumber})` : route.route}
+              >
                 {route.route}
               </span>
               <span className="tnum shrink-0 text-[10px] text-[var(--color-ink-faint)]">
@@ -417,6 +486,15 @@ function ExposureList({
               <span className="tnum w-16 shrink-0 text-right text-[10px] text-[var(--color-ink)]">
                 {route.peak === null ? "\u2014" : formatConcentration(route.peak)}
               </span>
+              {/*
+                IMO's own legend pairs each band with a depth. Most readers
+                cannot picture 43 kg/m²; nearly everyone can picture 4 cm.
+              */}
+              {depth && (
+                <span className="tnum w-14 shrink-0 text-right text-[10px] text-[var(--color-ink-dim)]">
+                  {route.peak === null ? "" : (depthEquivalent(route.peak) ?? "")}
+                </span>
+              )}
               <span
                 aria-hidden="true"
                 className="h-1 w-12 shrink-0 overflow-hidden rounded-full bg-white/[0.07]"
@@ -448,6 +526,15 @@ function ExposureList({
         route&rsquo;s share of the heaviest listed here, and at most two routes are
         shown per model cell so the list spans the plume rather than crowding
         one spot.
+        {depth && (
+          <>
+            {" "}
+            Depths are IMO&rsquo;s own equivalence from their legend &mdash; a
+            kilogram per square metre is about a millimetre &mdash; and are
+            approximate, because real tephra varies with grain size and
+            compaction.
+          </>
+        )}
         {covered > 0 && (
           <>
             {" "}
@@ -693,8 +780,12 @@ function RunControls({
         run={run}
         layer={layer}
         stations={probe.stations}
-        stationId={probe.stationId}
         onStationChange={probe.onStationChange}
+        place={probe.place}
+        station={probe.station}
+        picking={probe.picking}
+        onStartPicking={probe.onStartPicking}
+        onCancelPicking={probe.onCancelPicking}
         series={probe.series}
         loading={probe.loading}
         unavailable={probe.unavailable}
@@ -714,11 +805,17 @@ export type ExposureProps = {
   unavailable: boolean;
 };
 
-/** Everything the station probe needs, grouped so the panel signature stays readable. */
+/** Everything the place probe needs, grouped so the panel signature stays readable. */
 export type ProbeProps = {
   stations: readonly AirQualityStation[];
-  stationId: string | null;
   onStationChange: (id: string) => void;
+  /** The coordinate being asked about, whichever kind of target chose it. */
+  place: { latitude: number; longitude: number } | null;
+  /** Set when that coordinate is a monitoring station, which can also answer. */
+  station: AirQualityStation | null;
+  picking: boolean;
+  onStartPicking: () => void;
+  onCancelPicking: () => void;
   series: readonly DispersionPointSeries[];
   loading: boolean;
   unavailable: string | null;

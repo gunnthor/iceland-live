@@ -345,6 +345,37 @@ export function groundLayer(run: DispersionRun): DispersionLayer | null {
   );
 }
 
+/**
+ * IMO's own depth equivalence for tephra deposit.
+ *
+ * Their published legend labels each band twice — "1000 kg/m2 [~ 1 m]",
+ * "100 kg/m2 [~ 10 cm]", "1 kg/m2 [~ 1mm]" — which is a bulk density of a
+ * tonne per cubic metre, stated by them and not chosen here. Reproducing it
+ * turns a figure most readers cannot picture into one they can.
+ *
+ * Only for deposit. A concentration in the air has no depth, and the "~" is
+ * theirs: real tephra varies with grain size and compaction, so this is an
+ * order-of-magnitude equivalence and is written as one.
+ */
+const KG_PER_M2_TO_MM = 1;
+
+export function depthEquivalent(kgPerM2: number): string | null {
+  if (!Number.isFinite(kgPerM2) || kgPerM2 <= 0) return null;
+
+  const mm = kgPerM2 * KG_PER_M2_TO_MM;
+  if (mm >= 1000) return `~${Math.round(mm / 100) / 10} m`;
+  if (mm >= 10) return `~${Math.round(mm / 10)} cm`;
+  if (mm >= 1) return `~${Math.round(mm)} mm`;
+  // Below a millimetre, a rounded figure would read as nothing at all.
+  if (mm >= 0.1) return "under 1 mm";
+  return "a trace";
+}
+
+/** Whether a depth equivalence applies to this layer at all. */
+export function hasDepthEquivalent(layer: DispersionLayer): boolean {
+  return layer.dispersionType.endsWith("kg/m2");
+}
+
 /** Stable key for a layer within a run, used in the URL and as a React key. */
 export function layerKey(layer: DispersionLayer): string {
   return `${layer.dispersionType}|${layer.altitude}|${layer.altitudeUnit}`;

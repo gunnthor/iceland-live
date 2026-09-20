@@ -28,6 +28,7 @@ import {
   toAirGeoJson,
   toWindGeoJson,
   toPlumeOriginGeoJson,
+  toPointGeoJson,
 } from "./geojson";
 import {
   pulseLayer,
@@ -183,6 +184,8 @@ const INSAR_SOURCE = "insar-image";
 const INSAR_LAYER = "insar-raster";
 const PLUME_SOURCE = "dispersion-image";
 const PLUME_LAYER = "dispersion-raster";
+const PROBE_SOURCE = "dispersion-probe";
+const PROBE_LAYER = "dispersion-probe-point";
 const PLUME_ORIGIN_SOURCE = "dispersion-origin";
 const PLUME_ORIGIN_LAYER = "dispersion-origin-point";
 const PLUME_ORIGIN_LABEL_LAYER = "dispersion-origin-label";
@@ -240,6 +243,9 @@ export type InsarOverlay = ImageOverlay;
  */
 export type PlumeSource = { latitude: number; longitude: number; label: string };
 
+/** A coordinate the reader asked about, drawn as a small cross. */
+export type ProbePoint = { latitude: number; longitude: number };
+
 export type MapViewHandle = {
   /** Frames a bounding box, respecting the current panel padding. */
   fitBounds: (bounds: BoundingBox, options?: { maxZoom?: number }) => void;
@@ -263,6 +269,7 @@ type MapData = {
   insar: InsarOverlay | null;
   plume: ImageOverlay | null;
   plumeSource: PlumeSource | null;
+  probePoint: ProbePoint | null;
   webcams: readonly WebcamSite[];
   showWebcams: boolean;
   airStations: readonly AirQualityStation[];
@@ -321,6 +328,7 @@ function applyAll(map: MapLibreMap, data: MapData): void {
   setImageOverlay(map, { source: INSAR_SOURCE, layer: INSAR_LAYER }, data.insar, INSAR_OPACITY, aboveLabels);
   setImageOverlay(map, { source: PLUME_SOURCE, layer: PLUME_LAYER }, data.plume, PLUME_OPACITY, aboveLabels);
   geoJsonSource(map, PLUME_ORIGIN_SOURCE)?.setData(toPlumeOriginGeoJson(data.plumeSource));
+  geoJsonSource(map, PROBE_SOURCE)?.setData(toPointGeoJson(data.probePoint));
 
   geoJsonSource(map, WEBCAM_SOURCE)?.setData(toWebcamGeoJson(data.webcams));
   const webcamVisibility = data.showWebcams ? "visible" : "none";
@@ -392,6 +400,17 @@ export type MapViewProps = {
   plume: ImageOverlay | null;
   /** The modelled vent behind `plume`, when the run records a real one. */
   plumeSource: PlumeSource | null;
+  /**
+   * The place the dispersal panel is currently asking about, if any, drawn so
+   * the figures in the panel have somewhere to point.
+   */
+  probePoint: { latitude: number; longitude: number } | null;
+  /**
+   * True while the reader is choosing a place. The next click reports a
+   * coordinate instead of selecting whatever is under it.
+   */
+  picking: boolean;
+  onPickPoint: (point: { latitude: number; longitude: number }) => void;
   /** Road camera sites. */
   webcams: readonly WebcamSite[];
   showWebcams: boolean;
@@ -439,6 +458,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     insar,
     plume,
     plumeSource,
+    probePoint,
     webcams,
     showWebcams,
     airStations,
@@ -448,6 +468,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     showRoads,
     selectedWebcamId,
     onSelectWebcam,
+    picking,
+    onPickPoint,
     padding,
     onReady,
   },
@@ -464,6 +486,11 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
   onSelectRef.current = onSelect;
   const onSelectWebcamRef = useRef(onSelectWebcam);
   onSelectWebcamRef.current = onSelectWebcam;
+  const onPickPointRef = useRef(onPickPoint);
+  onPickPointRef.current = onPickPoint;
+  // Read inside a handler bound once at load, so it has to be a ref.
+  const pickingRef = useRef(picking);
+  pickingRef.current = picking;
 
   /*
    * The map is created asynchronously, so by the time its `load` event fires
@@ -485,6 +512,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     insar,
     plume,
     plumeSource,
+    probePoint,
     webcams,
     showWebcams,
     airStations,
@@ -507,6 +535,7 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     insar,
     plume,
     plumeSource,
+    probePoint,
     webcams,
     showWebcams,
     airStations,
@@ -899,6 +928,34 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
       },
     });
 
+    map.addSource(PROBE_SOURCE, {
+      type: "geojson",
+      data: { type: "FeatureCollection", features: [] },
+    });
+
+    /*
+     * The place being asked about. A ring would read as another observation
+     * among the earthquake markers, so this is a crosshair: unmistakably a
+     * position someone chose rather than something that happened.
+     */
+    map.addLayer({
+      id: PROBE_LAYER,
+      type: "circle",
+      source: PROBE_SOURCE,
+      paint: {
+        "circle-radius": 6,
+        /*
+         * A dark disc behind the ring. This sits on top of a dispersal raster
+         * in IMO's saturated scale, where a thin light ring on its own
+         * disappears into yellow and a thin dark one into the basemap.
+         */
+        "circle-color": "rgb(0 0 0 / 0.45)",
+        "circle-stroke-width": 2,
+        "circle-stroke-color": "#ffffff",
+        "circle-stroke-opacity": 0.95,
+      },
+    });
+
     map.addLayer({
       id: GNSS_LABEL_LAYER,
       type: "symbol",
@@ -1190,6 +1247,17 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     };
 
     map.on("click", (event) => {
+      /*
+       * Picking wins over everything. The reader has said they want a
+       * coordinate, so a marker that happens to be under the cursor is not
+       * what they are asking for — and an armed mode that sometimes does
+       * something else is worse than no mode.
+       */
+      if (pickingRef.current) {
+        onPickPointRef.current({ latitude: event.lngLat.lat, longitude: event.lngLat.lng });
+        return;
+      }
+
       // Cameras win over earthquakes: a camera marker is something a reader
       // aimed at, whereas quakes are the ambient layer underneath.
       const camera = pickWebcam(event);
@@ -1204,6 +1272,8 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     });
 
     map.on("mousemove", (event) => {
+      // Picking owns the cursor while it is armed.
+      if (pickingRef.current) return;
       map.getCanvas().style.cursor = pickWebcam(event) || pick(event) ? "pointer" : "";
     });
   }, []);
@@ -1383,6 +1453,22 @@ export const MapView = forwardRef<MapViewHandle, MapViewProps>(function MapView(
     if (!map || !loadedRef.current) return;
     geoJsonSource(map, PLUME_ORIGIN_SOURCE)?.setData(toPlumeOriginGeoJson(plumeSource));
   }, [plumeSource]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !loadedRef.current) return;
+    geoJsonSource(map, PROBE_SOURCE)?.setData(toPointGeoJson(probePoint));
+  }, [probePoint]);
+
+  /*
+   * Picking mode, applied to the canvas rather than to a React element: the
+   * map fills its container and the cursor has to change over all of it.
+   */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    map.getCanvas().style.cursor = picking ? "crosshair" : "";
+  }, [picking]);
 
   // --- Pulse animation --------------------------------------------------------
   useEffect(() => {
