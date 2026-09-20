@@ -472,10 +472,25 @@ result.
   polling on different schedules would otherwise store the same picture twice
   under different times, and the reel would claim a frame rate the camera does
   not have. Repeats are recognised by `ETag` as well.
-- **Bounded**: 30 frames per view, 40 views, six hours, and a hard byte budget
-  (`ICELAND_LIVE_FRAME_BUDGET_MB`, default 64). Over budget, the oldest frames
-  go from *every* reel rather than one camera being emptied, and no view is
-  ever left with nothing.
+- **Slots are earned, not split equally.** Because a frame is only kept when
+  the picture changed, a still camera's thirty frames already stretch across
+  the whole retention window while a busy one burns the same thirty in under
+  an hour — so the camera showing the most would get the shortest record,
+  which is backwards. Each view instead gets as many slots as reaching back
+  two hours costs it (`ICELAND_LIVE_FRAME_TARGET_HOURS`), between a floor of
+  30 that nobody drops below and a ceiling of 120 that nobody passes. What it
+  measures is the densest two hours a view still holds rather than its most
+  recent two, so a camera keeps what a busy stretch earned after things go
+  quiet, instead of losing it exactly when it became the interesting part of
+  the reel. This is only measurable because of the bullet above it: while
+  every poll was stored, frame density measured how often *we asked*.
+- **Bounded**: 120 frames per view at the very most, 40 views, six hours, and
+  a hard byte budget (`ICELAND_LIVE_FRAME_BUDGET_MB`, default 64). Over
+  budget, the oldest frames go from *every* reel rather than one camera being
+  emptied, and every view keeps a floor of three whatever the budget says.
+  Oldest-first is the right order but not a neutral one once slots are earned,
+  since a quiet view's frames are the old ones by definition — unguarded, it
+  would fund the busy cameras by emptying every other.
 - **Best-effort, like the disk cache.** Every failure is swallowed and logged
   once. A recorder that can break the live image it is recording is worse than
   no recorder.
@@ -1294,15 +1309,16 @@ that is where upstream reality meets our assumptions.
   repeats are recognised and discarded rather than stored.
 - **A camera's reel is only as long as someone was watching, or the recorder
   was pointed at it.** The server keeps what it has fetched. The scheduled
-  recorder covers the four sites nearest the current seismicity; every other
-  camera has only what readers have opened, so a short reel means a lack of
-  attention rather than a camera fault, and the viewer says so. The store is
-  also per instance and not durable, so two readers may see different reels.
-- **The recorder follows earthquakes, which is not the same as following
-  risk.** The watch list is the cameras nearest the busiest seismic region. On
-  a day when the seismicity is in the north and the thing worth watching is a
-  road on Reykjanes, it will be pointed at the wrong end of the country.
-  Deriving the list is still better than freezing one, but it is a proxy.
+  recorder covers the four sites nearest whatever the ladder picked; every
+  other camera has only what readers have opened, so a short reel means a lack
+  of attention rather than a camera fault, and the viewer says so. The store
+  is also per instance and not durable, so two readers may see different reels.
+- **How many slots a camera earns is a lower bound on how much it changed.**
+  The measure is how densely a view has kept frames, and a camera nobody polls
+  cannot demonstrate that its picture moved. A busy road nobody is watching
+  therefore earns nothing. That is the right failure — a reel nobody is
+  building is not one worth lengthening — but it means the figure describes
+  attention and activity together, never activity alone.
 - **The dispersal point series is the model, not the air.** It is what IMO's
   simulation puts at a coordinate for a scenario, and on almost every day that
   scenario is an eruption that is not happening. The measured readings shown
@@ -1384,16 +1400,11 @@ that is where upstream reality meets our assumptions.
 
 **Next up**
 
-1. **Spend the frame budget where something is happening.** The store now
-   knows how much each camera is changing, and still gives all of them the
-   same thirty slots. A camera showing traffic could earn more of the budget
-   than one showing an empty road, which is the difference between a reel and
-   a record.
-2. **Share a place, not just a run.** The picked coordinate lives in component
+1. **Share a place, not just a run.** The picked coordinate lives in component
    state, so "look at what this scenario puts over my farm" is not a link. It
    belongs in the URL beside the run, with the same validation the API already
    applies.
-3. **A written brief.** Everything here is a panel to be read on screen. The
+2. **A written brief.** Everything here is a panel to be read on screen. The
    deterministic summary, the observations, the current warnings and the
    dispersal scenarios could compose into a page someone could send — which is
    what people actually do with this kind of information.

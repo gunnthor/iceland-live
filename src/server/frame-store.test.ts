@@ -5,8 +5,11 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
+  BASE_FRAMES_PER_VIEW,
+  FLOOR_FRAMES_PER_VIEW,
   MAX_FRAMES_PER_VIEW,
   MAX_VIEWS,
+  earnedFrameCap,
   frameStoreStats,
   isViewKey,
   readFrame,
@@ -14,6 +17,7 @@ import {
   recordFrame,
   resetFrameStoreForTests,
   viewKeyFor,
+  type StoredFrame,
 } from "./frame-store";
 
 const CAMERA = "https://www.vegagerdin.is/vgdata/vefmyndavelar/gighaed_1.jpg";
@@ -144,9 +148,33 @@ describe("frame store", () => {
   });
 
   describe("bounds", () => {
-    it("keeps only the most recent frames for a view", async () => {
+    it("gives a view that rarely changes no more than the base reel", async () => {
       const key = viewKeyFor(CAMERA);
-      const total = MAX_FRAMES_PER_VIEW + 5;
+      const total = BASE_FRAMES_PER_VIEW + 5;
+      /*
+       * Nine minutes apart. No two-hour stretch of this holds more than
+       * fourteen frames, so there is nothing to earn and the base reel stands
+       * — a quiet camera keeps exactly what it kept before slots were earned.
+       */
+      for (let index = 0; index < total; index += 1) {
+        await recordFrame(key, frame(), {
+          takenAt: NOW - (total - index) * 540_000,
+          tag: `"${index}"`,
+          now: NOW,
+        });
+      }
+
+      const reel = await readReel(key, NOW);
+      expect(reel).toHaveLength(BASE_FRAMES_PER_VIEW);
+      // The oldest five are gone from the index and from the disk.
+      expect(reel[0]?.at).toBe(NOW - BASE_FRAMES_PER_VIEW * 540_000);
+      expect(await readFrame(key, NOW - total * 540_000)).toBeNull();
+    });
+
+    it("buys a busy view the frames that reaching back two hours costs", async () => {
+      const key = viewKeyFor(CAMERA);
+      // Four hours of a camera changing on every poll, two minutes apart.
+      const total = 120;
       for (let index = 0; index < total; index += 1) {
         await recordFrame(key, frame(), {
           takenAt: NOW - (total - index) * 120_000,
@@ -156,10 +184,39 @@ describe("frame store", () => {
       }
 
       const reel = await readReel(key, NOW);
-      expect(reel).toHaveLength(MAX_FRAMES_PER_VIEW);
-      // The oldest five are gone from the index and from the disk.
-      expect(reel[0]?.at).toBe(NOW - MAX_FRAMES_PER_VIEW * 120_000);
-      expect(await readFrame(key, NOW - total * 120_000)).toBeNull();
+      // Not thirty, and not the four hours it was given: the reel it keeps
+      // reaches back exactly the span the slots were bought for.
+      const span = (reel.at(-1)?.at ?? 0) - (reel[0]?.at ?? 0);
+      expect(span).toBe(2 * 3_600_000);
+      expect(reel.length).toBeGreaterThan(BASE_FRAMES_PER_VIEW);
+      expect(reel.length).toBeLessThanOrEqual(MAX_FRAMES_PER_VIEW);
+    });
+
+    it("leaves every view a floor when the byte budget cannot be met", async () => {
+      /*
+       * Small enough that the sweep would empty both views to reach it. The
+       * floor wins: "spend the budget where something is happening" must not
+       * become "one camera takes it all".
+       */
+      process.env.ICELAND_LIVE_FRAME_BUDGET_MB = String(2 / 1024); // 2 KB
+      const keys = [viewKeyFor(CAMERA), viewKeyFor(OTHER)];
+
+      for (let index = 0; index < 6; index += 1) {
+        for (const key of keys) {
+          await recordFrame(key, frame(1024), {
+            takenAt: NOW - (6 - index) * 120_000,
+            tag: `"${key}-${index}"`,
+            now: NOW,
+          });
+        }
+      }
+
+      for (const key of keys) {
+        const reel = await readReel(key, NOW);
+        expect(reel).toHaveLength(FLOOR_FRAMES_PER_VIEW);
+        // What it keeps is the newest, not whatever the sweep reached last.
+        expect(reel.at(-1)?.at).toBe(NOW - 120_000);
+      }
     });
 
     it("drops the view whose newest frame is oldest once too many are recorded", async () => {
@@ -250,6 +307,56 @@ describe("frame store", () => {
       );
       expect(await readReel(key, NOW)).toEqual([]);
     });
+  });
+});
+
+describe("the earned cap", () => {
+  const TWO_HOURS = 2 * 3_600_000;
+
+  /** `count` frames ending just before `NOW`, evenly spaced. */
+  function spaced(count: number, everyMs: number): StoredFrame[] {
+    return Array.from({ length: count }, (_, index) => ({
+      at: NOW - (count - index) * everyMs,
+      bytes: 1024,
+    }));
+  }
+
+  it("holds a camera that rarely changes at the base reel", () => {
+    // A frame every quarter of an hour: two hours costs nine of them.
+    expect(earnedFrameCap(spaced(60, 15 * 60_000), TWO_HOURS)).toBe(BASE_FRAMES_PER_VIEW);
+  });
+
+  it("buys a busy camera what two hours costs it", () => {
+    // A frame every two minutes: sixty intervals, so sixty-one frames.
+    expect(earnedFrameCap(spaced(200, 120_000), TWO_HOURS)).toBe(61);
+  });
+
+  it("stops at the ceiling however fast the picture changes", () => {
+    expect(earnedFrameCap(spaced(600, 10_000), TWO_HOURS)).toBe(MAX_FRAMES_PER_VIEW);
+  });
+
+  it("keeps what a busy stretch earned once the camera goes quiet", () => {
+    /*
+     * An hour of traffic five hours ago, then almost nothing. The densest
+     * window is behind us and it is still the one that decides — otherwise a
+     * view would lose the busy stretch precisely when it had become the
+     * interesting part of its reel.
+     */
+    const busy = Array.from({ length: 60 }, (_, index) => ({
+      at: NOW - 5 * 3_600_000 + index * 60_000,
+      bytes: 1024,
+    }));
+    const quiet = [NOW - 2 * 3_600_000, NOW - 3_600_000, NOW - 1_800_000].map((at) => ({
+      at,
+      bytes: 1024,
+    }));
+
+    expect(earnedFrameCap([...busy, ...quiet], TWO_HOURS)).toBe(60);
+  });
+
+  it("never reads a gap as a reason to drop below the base reel", () => {
+    // One frame an hour for two days: nothing dense anywhere in it.
+    expect(earnedFrameCap(spaced(48, 3_600_000), TWO_HOURS)).toBe(BASE_FRAMES_PER_VIEW);
   });
 });
 

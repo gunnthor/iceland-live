@@ -30,6 +30,15 @@
  * wrote first. Listings are memoised briefly, because a reel is read far more
  * often than it changes.
  *
+ * ## Where the budget goes
+ *
+ * Slots are earned rather than handed out equally. A frame is only kept when
+ * the picture changed, so a still camera's reel already reaches back hours
+ * while a busy one burns the same slots in under one — the camera showing the
+ * most would get the shortest record. Each view is instead given as many
+ * slots as it takes to reach back a couple of hours, between a floor everyone
+ * gets and a ceiling nobody passes. See `earnedFrameCap`.
+ *
  * ## What it is not
  *
  * Not an archive, and never presented as one. It holds what this deployment
@@ -49,8 +58,37 @@ import {
   type FrameBackend,
 } from "./frame-backend";
 
-/** Frames kept per camera view. At a minute or two apart, an hour or so. */
-export const MAX_FRAMES_PER_VIEW = 30;
+/**
+ * The reel every view gets, whatever it is showing.
+ *
+ * A view that rarely changes never needs more: since the previous frame is
+ * compared before a slot is spent, thirty kept frames already stretch across
+ * the whole retention window. This is the floor of the earned cap, so a quiet
+ * camera keeps exactly what it keeps today.
+ */
+export const BASE_FRAMES_PER_VIEW = 30;
+
+/**
+ * The most any one view can earn.
+ *
+ * At the fastest these cameras publish — about once a minute for a busy urban
+ * view — this is two hours of record, so nothing on the road network should
+ * reach it. It is a ceiling rather than a target: whatever a camera or a
+ * crowd of viewers turns out to do, one view cannot quietly become the store.
+ */
+export const MAX_FRAMES_PER_VIEW = 120;
+
+/**
+ * What the global byte sweep must leave a view.
+ *
+ * Earned caps make the byte budget bind far more often than a flat thirty
+ * did, and the sweep drops the oldest frames wherever they are — which is
+ * mostly the quiet cameras, by construction. Without a floor, "spend the
+ * budget where something is happening" would end as "one camera takes it
+ * all", and somebody watching anything else would be left on a single
+ * picture. Bounded by `MAX_VIEWS`, so the floor's own footprint is small.
+ */
+export const FLOOR_FRAMES_PER_VIEW = 3;
 
 /** Views kept at once. Beyond this the one with the oldest newest frame goes. */
 export const MAX_VIEWS = 40;
@@ -100,6 +138,18 @@ function changeThreshold(): number {
 function retentionMs(): number {
   const configured = Number(process.env.ICELAND_LIVE_FRAME_RETENTION_HOURS);
   const hours = Number.isFinite(configured) && configured > 0 ? configured : 6;
+  return hours * 3_600_000;
+}
+
+/**
+ * How far back a reel should reach, which is what a view's slots are spent
+ * buying. Two hours covers the approach to an event rather than its last
+ * minutes, and sits inside the default retention window so the two bounds do
+ * not argue.
+ */
+function targetReelMs(): number {
+  const configured = Number(process.env.ICELAND_LIVE_FRAME_TARGET_HOURS);
+  const hours = Number.isFinite(configured) && configured > 0 ? configured : 2;
   return hours * 3_600_000;
 }
 
@@ -230,6 +280,60 @@ async function removeFrame(view: string, at: number): Promise<void> {
 }
 
 /**
+ * How many slots a view has earned.
+ *
+ * ## The thing being bought
+ *
+ * Not "how busy is this camera" scored out of ten, but a length of record.
+ * Every view is trying to reach back `targetReelMs`; what differs is how many
+ * frames that costs. A junction under traffic changes on nearly every poll
+ * and needs sixty of them to cover two hours; a mountain road changes a
+ * handful of times all morning and covers the same two hours with four. The
+ * cap is simply the price of the same reel, which is why this returns a
+ * count rather than a weight.
+ *
+ * Frame density only became a measure of the scene once frames were compared
+ * before being kept. While every poll was stored it measured how often *we
+ * asked*; now that a slot is spent only when the picture changed, it measures
+ * how often the picture changed — the camera's behaviour rather than ours.
+ *
+ * It is a lower bound on activity, not a measurement of it: a camera nobody
+ * polls cannot show that it changed. That is the right failure. A view nobody
+ * is watching and the recorder is not pointed at has no reel worth extending.
+ *
+ * ## Why the busiest window and not the most recent one
+ *
+ * Taken over the last two hours, a view would lose its earned slots as soon
+ * as things went quiet — trimming the busy stretch precisely when it had
+ * become the interesting part of the reel. Taking the densest window the view
+ * still holds lets it keep what it earned until those frames age out of the
+ * retention window on their own.
+ *
+ * ## Bounds
+ *
+ * Never below `BASE_FRAMES_PER_VIEW`, so no view loses anything it holds
+ * today, and never above `MAX_FRAMES_PER_VIEW`. Frames must be sorted oldest
+ * first, as everything in this module keeps them.
+ */
+export function earnedFrameCap(
+  frames: readonly StoredFrame[],
+  targetMs: number = targetReelMs(),
+): number {
+  // Below the floor the answer cannot change, and this runs on every write.
+  if (frames.length <= BASE_FRAMES_PER_VIEW) return BASE_FRAMES_PER_VIEW;
+
+  let widest = 0;
+  let start = 0;
+  for (let end = 0; end < frames.length; end += 1) {
+    const last = frames[end] as StoredFrame;
+    while (last.at - (frames[start] as StoredFrame).at > targetMs) start += 1;
+    widest = Math.max(widest, end - start + 1);
+  }
+
+  return Math.min(Math.max(widest, BASE_FRAMES_PER_VIEW), MAX_FRAMES_PER_VIEW);
+}
+
+/**
  * Brings the store back inside its bounds.
  *
  * Age first, then the per-view cap, then whole views, then the byte budget —
@@ -252,7 +356,12 @@ async function enforceBounds(now: number): Promise<void> {
       keep.push(frame);
     }
 
-    while (keep.length > MAX_FRAMES_PER_VIEW) {
+    /*
+     * Measured after the age trim, so frames already past retention cannot
+     * inflate the cap that decides what survives.
+     */
+    const cap = earnedFrameCap(keep);
+    while (keep.length > cap) {
       const oldest = keep.shift();
       if (oldest) {
         await removeFrame(view, oldest.at);
@@ -297,6 +406,13 @@ async function enforceBounds(now: number): Promise<void> {
    * the recent past for every camera someone is watching; sacrificing one
    * camera entirely would leave a viewer staring at a single frame while
    * another camera nobody has open keeps a full hour.
+   *
+   * Every view keeps `FLOOR_FRAMES_PER_VIEW` whatever the budget says. Oldest
+   * first is the right order, but it is not a neutral one once slots are
+   * earned: a quiet view's frames are the old ones by definition, so an
+   * unguarded sweep would fund the busy cameras by emptying every other. The
+   * floor can therefore hold the store above a budget set smaller than a few
+   * frames for every view at once, which `MAX_VIEWS` keeps small.
    */
   let over = total() - budget;
   if (over > 0) {
@@ -307,8 +423,7 @@ async function enforceBounds(now: number): Promise<void> {
     for (const { view, frame } of everything) {
       if (over <= 0) break;
       const frames = views.get(view);
-      // Never leave a view with nothing: a reel of one is still a live picture.
-      if (!frames || frames.length <= 1) continue;
+      if (!frames || frames.length <= FLOOR_FRAMES_PER_VIEW) continue;
       views.set(
         view,
         frames.filter((item) => item.at !== frame.at),
